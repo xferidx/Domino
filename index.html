@@ -113,6 +113,15 @@
         return saved ? JSON.parse(saved) : [];
       });
 
+      const [sets, setSets] = useState(() => {
+        const saved = localStorage.getItem('domino_sets');
+        return saved ? JSON.parse(saved) : { 1: 0, 2: 0 };
+      });
+      const [overWinner, setOverWinner] = useState(() => {
+        const v = localStorage.getItem('domino_over');
+        return v ? parseInt(v, 10) : null;
+      });
+
       // UI States
       const [modal, setModal] = useState(null); // 'manual' | 'camera' | 'settings' | 'winner' | 'install-help'
       const [selectedPlayerId, setSelectedPlayerId] = useState(1);
@@ -154,24 +163,38 @@
         }
       };
 
-      // Save to localStorage + check victory
+      // Save to localStorage
       useEffect(() => {
         localStorage.setItem('domino_target', targetScore);
         localStorage.setItem('domino_players', JSON.stringify(players));
         localStorage.setItem('domino_rounds', JSON.stringify(rounds));
-
-        const p1Win = players[0].score >= targetScore;
-        const p2Win = players[1].score >= targetScore;
-
-        if (p1Win || p2Win) {
-          const champ = players[0].score > players[1].score ? players[0] : players[1];
-          setWinner(champ);
-          setModal('winner');
-          try {
-            confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
-          } catch(e){}
-        }
       }, [players, targetScore, rounds]);
+
+      useEffect(() => {
+        localStorage.setItem('domino_sets', JSON.stringify(sets));
+        localStorage.setItem('domino_over', overWinner === null ? '' : String(overWinner));
+      }, [sets, overWinner]);
+
+      // Check victory (a set is counted once per win)
+      useEffect(() => {
+        const someoneWon = targetScore > 0 && (players[0].score >= targetScore || players[1].score >= targetScore);
+        if (someoneWon) {
+          if (overWinner === null) {
+            const champ = players[0].score > players[1].score ? players[0] : players[1];
+            setOverWinner(champ.id);
+            setSets(prev => ({ ...prev, [champ.id]: (prev[champ.id] || 0) + 1 }));
+            setWinner(champ);
+            setModal('winner');
+            try {
+              confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
+            } catch (e) {}
+          }
+        } else if (overWinner !== null) {
+          // Win was undone (undo or higher goal): take the set back
+          setSets(prev => ({ ...prev, [overWinner]: Math.max(0, (prev[overWinner] || 0) - 1) }));
+          setOverWinner(null);
+        }
+      }, [players, targetScore, overWinner]);
 
       // Add points
       const addPoints = (playerId, points, method = 'keyboard') => {
@@ -212,16 +235,27 @@
         setRounds(rounds.filter(r => r.id !== roundId));
       };
 
-      // Reset Match
+      // Start a new match (sets are kept)
+      const newMatch = () => {
+        setPlayers([
+          { id: 1, name: players[0].name, score: 0 },
+          { id: 2, name: players[1].name, score: 0 }
+        ]);
+        setRounds([]);
+        setWinner(null);
+        setOverWinner(null);
+        setModal(null);
+      };
+
       const resetGame = () => {
-        if (confirm("Reset the entire match? Scores and history will be cleared.")) {
-          setPlayers([
-            { id: 1, name: players[0].name, score: 0 },
-            { id: 2, name: players[1].name, score: 0 }
-          ]);
-          setRounds([]);
-          setWinner(null);
-          setModal(null);
+        if (confirm("Reset the current match? Scores and history will be cleared (sets are kept).")) {
+          newMatch();
+        }
+      };
+
+      const clearSets = () => {
+        if (confirm("Clear the sets counter?")) {
+          setSets({ 1: 0, 2: 0 });
         }
       };
 
@@ -269,12 +303,14 @@
               return (
                 <div
                   key={player.id}
-                  class={`glass relative rounded-3xl p-4 flex flex-col justify-between transition-all duration-500 ${isP1 ? 'card-p1' : 'card-p2'} ${leaderId === player.id ? (isP1 ? 'lead-1' : 'lead-2') : ''}`}
+                  onClick={() => { setSelectedPlayerId(player.id); setModal('manual'); }}
+                  class={`glass relative cursor-pointer active:scale-[0.97] rounded-3xl p-4 flex flex-col justify-between transition-all duration-500 ${isP1 ? 'card-p1' : 'card-p2'} ${leaderId === player.id ? (isP1 ? 'lead-1' : 'lead-2') : ''}`}
                 >
                   <div class="flex items-center justify-between mb-2">
                     <input
                       type="text"
                       value={player.name}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => {
                         const val = e.target.value;
                         setPlayers(players.map(p => p.id === player.id ? { ...p, name: val } : p));
@@ -299,29 +335,36 @@
                       style={{ width: `${progress}%` }}
                     />
                   </div>
+
+                  {/* Sets won */}
+                  <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-700/50">
+                    <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">🏆 Sets</span>
+                    <span key={sets[player.id] || 0} class={`pop tabular text-xl font-black ${isP1 ? 'text-emerald-400' : 'text-blue-400'}`}>{sets[player.id] || 0}</span>
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Quick Input Launcher Buttons */}
-          <div class="grid grid-cols-2 gap-3 mb-4">
+          {/* Hint + clear sets */}
+          <div class="flex items-center justify-between mb-3 px-1 text-xs">
+            <span class="text-slate-500 font-medium">Tap a player card to add points</span>
             <button
-              onClick={() => { setSelectedPlayerId(1); setModal('manual'); }}
-              class="flex items-center justify-center gap-2 glass border border-slate-600/60 hover:border-emerald-500/50 active:scale-95 py-3.5 px-4 rounded-2xl font-bold shadow-lg transition"
+              onClick={clearSets}
+              class="font-semibold text-rose-400 hover:text-rose-300 bg-slate-900/70 border border-slate-800 px-3 py-1 rounded-full active:scale-95 transition"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect width="18" height="12" x="3" y="6" rx="2"/><path d="M7 10h.01"/><path d="M12 10h.01"/><path d="M17 10h.01"/><path d="M7 14h.01"/><path d="M12 14h.01"/><path d="M17 14h.01"/></svg>
-              <span>Keyboard Input</span>
-            </button>
-
-            <button
-              onClick={() => { setSelectedPlayerId(1); setModal('camera'); }}
-              class="flex items-center justify-center gap-2 shine bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 py-3.5 px-4 rounded-2xl font-bold text-white shadow-lg shadow-emerald-500/30 transition"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-              <span>Scan Dominoes</span>
+              Clear sets
             </button>
           </div>
+
+          {/* Camera scanner */}
+          <button
+            onClick={() => { setSelectedPlayerId(1); setModal('camera'); }}
+            class="shine w-full flex items-center justify-center gap-2 mb-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 py-4 px-4 rounded-2xl font-bold text-white shadow-lg shadow-emerald-500/30 transition"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span>Scan Dominoes</span>
+          </button>
 
           {/* History Feed */}
           <div class="flex-1 glass border border-slate-800 rounded-3xl p-3 overflow-hidden flex flex-col mb-4">
@@ -331,7 +374,7 @@
             </div>
             <div class="overflow-y-auto flex-1 divide-y divide-slate-800/60 mt-1 max-h-48 pr-1">
               {rounds.length === 0 ? (
-                <div class="text-center py-6 text-slate-600 text-sm">No points recorded yet.<br/>Type points or scan domino tiles!</div>
+                <div class="text-center py-6 text-slate-600 text-sm">No points recorded yet.<br/>Tap a player card or scan domino tiles!</div>
               ) : (
                 rounds.map(r => {
                   const p = players.find(player => player.id === r.playerId) || { name: 'Player' };
@@ -530,13 +573,11 @@
                 </div>
                 <h2 class="text-2xl font-black text-white">{winner.name} Wins!</h2>
                 <p class="text-slate-400 text-sm mt-1">Reached {winner.score} points (Target: {targetScore})</p>
+                <p class="text-emerald-300 text-sm font-bold mt-3 tabular">Sets: {players[0].name} {sets[1] || 0} – {sets[2] || 0} {players[1].name}</p>
 
                 <div class="mt-6 flex flex-col gap-2">
                   <button
-                    onClick={() => {
-                      resetGame();
-                      setModal(null);
-                    }}
+                    onClick={newMatch}
                     class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition shadow-lg shadow-emerald-950"
                   >
                     Play Again
