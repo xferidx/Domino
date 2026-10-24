@@ -34,6 +34,37 @@
     .ar-font {
       font-family: 'Noto Kufi Arabic', sans-serif;
     }
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background:
+        radial-gradient(600px 420px at 8% -5%, rgba(16,185,129,.20), transparent 60%),
+        radial-gradient(520px 420px at 100% 12%, rgba(59,130,246,.16), transparent 60%),
+        radial-gradient(560px 520px at 50% 112%, rgba(20,184,166,.14), transparent 60%);
+    }
+    .glass {
+      background: linear-gradient(160deg, rgba(30,41,59,.62), rgba(15,23,42,.82));
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    }
+    .card-p1 { box-shadow: 0 0 0 1px rgba(16,185,129,.30), 0 14px 30px -14px rgba(16,185,129,.35); }
+    .card-p2 { box-shadow: 0 0 0 1px rgba(59,130,246,.30), 0 14px 30px -14px rgba(59,130,246,.35); }
+    .lead-1 { box-shadow: 0 0 0 2px rgba(16,185,129,.85), 0 0 32px rgba(16,185,129,.35); }
+    .lead-2 { box-shadow: 0 0 0 2px rgba(59,130,246,.85), 0 0 32px rgba(59,130,246,.35); }
+    .tabular { font-variant-numeric: tabular-nums; }
+    .pop { animation: pop .4s cubic-bezier(.2,.9,.3,1.3); }
+    .slide-up { animation: slideUp .3s cubic-bezier(.2,.8,.2,1); }
+    .fade-in { animation: fadeIn .22s ease; }
+    .float { animation: float 4s ease-in-out infinite; }
+    .shine { position: relative; overflow: hidden; }
+    .shine::after {
+      content: ""; position: absolute; inset: 0;
+      background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,.28) 50%, transparent 70%);
+      transform: translateX(-130%); animation: shine 3.6s ease-in-out infinite;
+    }
+    @keyframes pop { 0% { transform: scale(.75); opacity: .3 } 60% { transform: scale(1.12) } 100% { transform: scale(1); opacity: 1 } }
+    @keyframes slideUp { from { transform: translateY(40px); opacity: 0 } to { transform: translateY(0); opacity: 1 } }
+    @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+    @keyframes float { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-3px) } }
+    @keyframes shine { 0%,55% { transform: translateX(-130%) } 100% { transform: translateX(130%) } }
     .scanner-viewfinder {
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.65);
     }
@@ -194,13 +225,15 @@
         }
       };
 
+      const leaderId = players[0].score === players[1].score ? null : (players[0].score > players[1].score ? 1 : 2);
+
       return (
         <div class="max-w-md mx-auto min-h-screen flex flex-col justify-between p-4 pb-8">
           {/* Header */}
           <header class="flex items-center justify-between py-3 border-b border-slate-800">
             <div class="flex items-center space-x-2">
-              <img src="icon-192.png" alt="" class="w-8 h-8 rounded-lg" />
-              <span class="font-black text-lg tracking-wider text-white">DOMINO</span>
+              <img src="icon-192.png" alt="" class="w-9 h-9 rounded-xl shadow-lg shadow-emerald-500/30 float" />
+              <span class="font-black text-lg tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-white to-emerald-300">DOMINO</span>
               <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Points</span>
             </div>
 
@@ -236,11 +269,7 @@
               return (
                 <div
                   key={player.id}
-                  class={`relative rounded-2xl p-4 flex flex-col justify-between border-2 transition-all ${
-                    isP1
-                      ? 'bg-slate-900/90 border-emerald-500/30'
-                      : 'bg-slate-900/90 border-blue-500/30'
-                  }`}
+                  class={`glass relative rounded-3xl p-4 flex flex-col justify-between transition-all duration-500 ${isP1 ? 'card-p1' : 'card-p2'} ${leaderId === player.id ? (isP1 ? 'lead-1' : 'lead-2') : ''}`}
                 >
                   <div class="flex items-center justify-between mb-2">
                     <input
@@ -253,20 +282,20 @@
                       class="bg-transparent font-bold text-sm tracking-wide focus:outline-none focus:ring-1 focus:ring-slate-400 rounded px-1 -ml-1 text-slate-200 truncate w-24"
                     />
                     <span class={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isP1 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                      P{player.id}
+                      {leaderId === player.id ? '👑 Lead' : `P${player.id}`}
                     </span>
                   </div>
 
                   <div class="my-2">
-                    <div class="text-5xl font-black tracking-tight text-white">{player.score}</div>
+                    <div key={player.score} class="pop tabular text-6xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-slate-400">{player.score}</div>
                     <div class="text-xs text-slate-500 font-medium mt-0.5">
                       {targetScore - player.score > 0 ? `${targetScore - player.score} to win` : 'WINNER!'}
                     </div>
                   </div>
 
-                  <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mt-2">
+                  <div class="w-full bg-slate-800/80 h-2.5 rounded-full overflow-hidden mt-2">
                     <div
-                      class={`h-full rounded-full transition-all duration-500 ${isP1 ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                      class={`h-full rounded-full transition-all duration-700 ${isP1 ? 'bg-gradient-to-r from-emerald-500 to-teal-300 shadow-[0_0_10px_rgba(16,185,129,.7)]' : 'bg-gradient-to-r from-blue-500 to-sky-300 shadow-[0_0_10px_rgba(59,130,246,.7)]'}`}
                       style={{ width: `${progress}%` }}
                     />
                   </div>
@@ -279,7 +308,7 @@
           <div class="grid grid-cols-2 gap-3 mb-4">
             <button
               onClick={() => { setSelectedPlayerId(1); setModal('manual'); }}
-              class="flex items-center justify-center gap-2 bg-gradient-to-b from-slate-800 to-slate-900 border border-slate-700 active:scale-95 py-3.5 px-4 rounded-xl font-bold shadow-lg transition"
+              class="flex items-center justify-center gap-2 glass border border-slate-600/60 hover:border-emerald-500/50 active:scale-95 py-3.5 px-4 rounded-2xl font-bold shadow-lg transition"
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect width="18" height="12" x="3" y="6" rx="2"/><path d="M7 10h.01"/><path d="M12 10h.01"/><path d="M17 10h.01"/><path d="M7 14h.01"/><path d="M12 14h.01"/><path d="M17 14h.01"/></svg>
               <span>Keyboard Input</span>
@@ -287,7 +316,7 @@
 
             <button
               onClick={() => { setSelectedPlayerId(1); setModal('camera'); }}
-              class="flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 py-3.5 px-4 rounded-xl font-bold text-white shadow-lg shadow-emerald-950 transition"
+              class="flex items-center justify-center gap-2 shine bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 py-3.5 px-4 rounded-2xl font-bold text-white shadow-lg shadow-emerald-500/30 transition"
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
               <span>Scan Dominoes</span>
@@ -295,7 +324,7 @@
           </div>
 
           {/* History Feed */}
-          <div class="flex-1 bg-slate-900/60 border border-slate-800 rounded-2xl p-3 overflow-hidden flex flex-col mb-4">
+          <div class="flex-1 glass border border-slate-800 rounded-3xl p-3 overflow-hidden flex flex-col mb-4">
             <div class="flex justify-between items-center px-1 pb-2 border-b border-slate-800 text-xs font-semibold text-slate-400">
               <span>ROUND LOG</span>
               <button onClick={resetGame} class="text-rose-400 hover:text-rose-300">Clear Game</button>
@@ -307,7 +336,7 @@
                 rounds.map(r => {
                   const p = players.find(player => player.id === r.playerId) || { name: 'Player' };
                   return (
-                    <div key={r.id} class="flex items-center justify-between py-2 text-sm">
+                    <div key={r.id} class={`fade-in flex items-center justify-between py-2 pl-2 text-sm border-l-2 ${r.playerId === 1 ? 'border-emerald-500' : 'border-blue-500'}`}>
                       <div class="flex items-center gap-2">
                         <span class="text-xs text-slate-500">{r.time}</span>
                         <span class={`font-semibold ${r.playerId === 1 ? 'text-emerald-400' : 'text-blue-400'}`}>
@@ -335,7 +364,7 @@
           </div>
 
           {/* SPONSOR SECTION */}
-          <div class="bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800/80 rounded-2xl p-3.5 shadow-lg">
+          <div class="glass border border-slate-800/80 rounded-3xl p-3.5 shadow-lg">
             <div class="flex items-center justify-center gap-1.5 text-center text-xs font-semibold text-slate-400 mb-2.5">
               <span>✨ This app is sponsored by</span>
               <span class="text-slate-500">•</span>
@@ -403,7 +432,7 @@
 
           {/* EDIT TARGET SCORE MODAL */}
           {modal === 'settings' && (
-            <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div class="fade-in fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
                 <h3 class="text-lg font-bold text-white mb-1">Edit Winning Points</h3>
                 <p class="text-xs text-slate-400 mb-4">Default is 151. Choose or enter custom points.</p>
@@ -442,7 +471,7 @@
 
           {/* INSTALL HELP MODAL (only when the browser has no native install prompt) */}
           {modal === 'install-help' && (
-            <div class="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <div class="fade-in fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
               <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-3xl p-5 shadow-2xl">
                 <div class="flex justify-between items-center mb-3">
                   <h3 class="text-base font-bold text-white flex items-center gap-2">
@@ -494,9 +523,9 @@
 
           {/* WINNER MODAL */}
           {modal === 'winner' && winner && (
-            <div class="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
-              <div class="bg-gradient-to-b from-slate-900 to-slate-950 border border-emerald-500/50 w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl">
-                <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl">
+            <div class="fade-in fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+              <div class="slide-up bg-gradient-to-b from-slate-900 to-slate-950 border border-emerald-500/50 w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl">
+                <div class="float w-16 h-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_40px_rgba(16,185,129,.5)] rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl">
                   🏆
                 </div>
                 <h2 class="text-2xl font-black text-white">{winner.name} Wins!</h2>
@@ -552,8 +581,8 @@
       };
 
       return (
-        <div class="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex flex-col justify-end p-3 max-w-md mx-auto">
-          <div class="bg-slate-900 border border-slate-700 rounded-3xl p-4 shadow-2xl flex flex-col">
+        <div class="fade-in fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex flex-col justify-end p-3 max-w-md mx-auto">
+          <div class="slide-up bg-slate-900 border border-slate-700 rounded-3xl p-4 shadow-2xl flex flex-col">
             <div class="flex justify-between items-center mb-3">
               <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Score Round</span>
               <button onClick={onClose} class="text-slate-400 hover:text-white p-1">✕</button>
@@ -577,7 +606,7 @@
             </div>
 
             <div class="bg-slate-950 border border-slate-800 rounded-2xl py-3 px-4 text-center mb-3">
-              <span class="text-4xl font-black text-emerald-400">{inputPoints || '0'}</span>
+              <span class="tabular text-4xl font-black text-emerald-400 drop-shadow-[0_0_12px_rgba(16,185,129,.5)]">{inputPoints || '0'}</span>
               <span class="text-slate-500 text-xs font-semibold ml-1">pts</span>
             </div>
 
@@ -613,7 +642,7 @@
                   <button
                     key={btn}
                     onClick={() => handleKeypad(btn)}
-                    class="bg-slate-800 text-white font-bold text-xl py-3 rounded-xl active:bg-slate-700"
+                    class="bg-slate-800 text-white font-bold text-xl py-3 rounded-xl border border-slate-700/60 active:scale-95 active:bg-slate-700 transition"
                   >
                     {btn}
                   </button>
@@ -729,7 +758,7 @@
       const finalCount = Math.max(0, detectedPips + manualAdjustment);
 
       return (
-        <div class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col justify-between p-4 max-w-md mx-auto">
+        <div class="fade-in fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col justify-between p-4 max-w-md mx-auto">
           <div class="flex justify-between items-center text-white pt-2">
             <div>
               <h4 class="font-bold text-sm">Domino Pip Scanner</h4>
