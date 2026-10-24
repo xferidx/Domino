@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Domino Points - Scorekeeper & Scanner</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap');
+    body {
+      font-family: 'Outfit', sans-serif;
+      touch-action: manipulation;
+    }
+    .scanner-viewfinder {
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.65);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // --- MAIN APP COMPONENT ---
+    function DominoApp() {
+      // Game State
+      const [targetScore, setTargetScore] = useState(() => {
+        return parseInt(localStorage.getItem('domino_target') || '151', 10);
+      });
+      const [players, setPlayers] = useState(() => {
+        const saved = localStorage.getItem('domino_players');
+        return saved ? JSON.parse(saved) : [
+          { id: 1, name: 'Player 1', score: 0 },
+          { id: 2, name: 'Player 2', score: 0 }
+        ];
+      });
+      const [rounds, setRounds] = useState(() => {
+        const saved = localStorage.getItem('domino_rounds');
+        return saved ? JSON.parse(saved) : [];
+      });
+
+      // UI States
+      const [modal, setModal] = useState(null); // 'manual' | 'camera' | 'settings' | 'winner'
+      const [selectedPlayerId, setSelectedPlayerId] = useState(1);
+      const [winner, setWinner] = useState(null);
+
+      // Save to localStorage
+      useEffect(() => {
+        localStorage.setItem('domino_target', targetScore);
+        localStorage.setItem('domino_players', JSON.stringify(players));
+        localStorage.setItem('domino_rounds', JSON.stringify(rounds));
+
+        // Check for victory
+        const p1Win = players[0].score >= targetScore;
+        const p2Win = players[1].score >= targetScore;
+
+        if (p1Win || p2Win) {
+          const champ = players[0].score > players[1].score ? players[0] : players[1];
+          setWinner(champ);
+          setModal('winner');
+          try {
+            confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
+          } catch(e){}
+        }
+      }, [players, targetScore, rounds]);
+
+      // Add points
+      const addPoints = (playerId, points, method = 'keyboard') => {
+        if (!points || isNaN(points) || points <= 0) return;
+        
+        const newPlayers = players.map(p => {
+          if (p.id === playerId) {
+            return { ...p, score: p.score + points };
+          }
+          return p;
+        });
+
+        const newRound = {
+          id: Date.now(),
+          playerId,
+          points,
+          method,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+
+        setPlayers(newPlayers);
+        setRounds([newRound, ...rounds]);
+        setModal(null);
+      };
+
+      // Undo last round
+      const undoRound = (roundId) => {
+        const roundToUndo = rounds.find(r => r.id === roundId);
+        if (!roundToUndo) return;
+
+        setPlayers(players.map(p => {
+          if (p.id === roundToUndo.playerId) {
+            return { ...p, score: Math.max(0, p.score - roundToUndo.points) };
+          }
+          return p;
+        }));
+
+        setRounds(rounds.filter(r => r.id !== roundId));
+      };
+
+      // Reset Match
+      const resetGame = () => {
+        if (confirm("Reset the entire match? Scores and history will be cleared.")) {
+          setPlayers([
+            { id: 1, name: players[0].name, score: 0 },
+            { id: 2, name: players[1].name, score: 0 }
+          ]);
+          setRounds([]);
+          setWinner(null);
+          setModal(null);
+        }
+      };
+
+      return (
+        <div class="max-w-md mx-auto min-h-screen flex flex-col justify-between p-4 pb-8">
+          {/* Header */}
+          <header class="flex items-center justify-between py-3 border-b border-slate-800">
+            <div class="flex items-center space-x-2">
+              <span class="bg-emerald-500 text-slate-950 font-black px-2.5 py-1 rounded-lg text-lg tracking-wider">🀄 DOMINO</span>
+              <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Points Tracker</span>
+            </div>
+
+            <button 
+              onClick={() => setModal('settings')}
+              class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium text-slate-300"
+            >
+              <span>Goal: <strong class="text-emerald-400 font-bold">{targetScore}</strong> pts</span>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            </button>
+          </header>
+
+          {/* Players Score Cards */}
+          <div class="grid grid-cols-2 gap-3 my-4">
+            {players.map((player, idx) => {
+              const progress = Math.min(100, Math.round((player.score / targetScore) * 100));
+              const isP1 = idx === 0;
+              return (
+                <div 
+                  key={player.id} 
+                  class={`relative rounded-2xl p-4 flex flex-col justify-between border-2 transition-all ${
+                    isP1 
+                      ? 'bg-slate-900/90 border-emerald-500/30' 
+                      : 'bg-slate-900/90 border-blue-500/30'
+                  }`}
+                >
+                  <div class="flex items-center justify-between mb-2">
+                    <input 
+                      type="text" 
+                      value={player.name}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPlayers(players.map(p => p.id === player.id ? { ...p, name: val } : p));
+                      }}
+                      class="bg-transparent font-bold text-sm tracking-wide focus:outline-none focus:ring-1 focus:ring-slate-400 rounded px-1 -ml-1 text-slate-200 truncate w-24"
+                    />
+                    <span class={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isP1 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                      P{player.id}
+                    </span>
+                  </div>
+
+                  {/* Big Score */}
+                  <div class="my-2">
+                    <div class="text-5xl font-black tracking-tight text-white">{player.score}</div>
+                    <div class="text-xs text-slate-500 font-medium mt-0.5">
+                      {targetScore - player.score > 0 ? `${targetScore - player.score} to win` : 'WINNER!'}
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mt-2">
+                    <div 
+                      class={`h-full rounded-full transition-all duration-500 ${isP1 ? 'bg-emerald-500' : 'bg-blue-500'}`} 
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Quick Input Launcher Buttons */}
+          <div class="grid grid-cols-2 gap-3 mb-4">
+            <button
+              onClick={() => { setSelectedPlayerId(1); setModal('manual'); }}
+              class="flex items-center justify-center gap-2 bg-gradient-to-b from-slate-800 to-slate-900 border border-slate-700 active:scale-95 py-3.5 px-4 rounded-xl font-bold shadow-lg transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect width="18" height="12" x="3" y="6" rx="2"/><path d="M7 10h.01"/><path d="M12 10h.01"/><path d="M17 10h.01"/><path d="M7 14h.01"/><path d="M12 14h.01"/><path d="M17 14h.01"/></svg>
+              <span>Keyboard Input</span>
+            </button>
+
+            <button
+              onClick={() => { setSelectedPlayerId(1); setModal('camera'); }}
+              class="flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 py-3.5 px-4 rounded-xl font-bold text-white shadow-lg shadow-emerald-950 transition"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              <span>Scan Dominoes</span>
+            </button>
+          </div>
+
+          {/* History Feed */}
+          <div class="flex-1 bg-slate-900/60 border border-slate-800 rounded-2xl p-3 overflow-hidden flex flex-col mb-4">
+            <div class="flex justify-between items-center px-1 pb-2 border-b border-slate-800 text-xs font-semibold text-slate-400">
+              <span>ROUND LOG</span>
+              <button onClick={resetGame} class="text-rose-400 hover:text-rose-300">Clear Game</button>
+            </div>
+            <div class="overflow-y-auto flex-1 divide-y divide-slate-800/60 mt-1 max-h-56 pr-1">
+              {rounds.length === 0 ? (
+                <div class="text-center py-8 text-slate-600 text-sm">No points recorded yet.<br/>Type points or scan domino tiles!</div>
+              ) : (
+                rounds.map(r => {
+                  const p = players.find(player => player.id === r.playerId) || { name: 'Player' };
+                  return (
+                    <div key={r.id} class="flex items-center justify-between py-2 text-sm">
+                      <div class="flex items-center gap-2">
+                        <span class="text-xs text-slate-500">{r.time}</span>
+                        <span class={`font-semibold ${r.playerId === 1 ? 'text-emerald-400' : 'text-blue-400'}`}>
+                          {p.name}
+                        </span>
+                        <span class="text-xs bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">
+                          {r.method === 'camera' ? '📷 scan' : '⌨️ manual'}
+                        </span>
+                      </div>
+                      <div class="flex items-center gap-3">
+                        <span class="font-extrabold text-white text-base">+{r.points}</span>
+                        <button 
+                          onClick={() => undoRound(r.id)} 
+                          title="Undo score" 
+                          class="text-slate-500 hover:text-rose-400 transition"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* MANUAL ENTRY MODAL */}
+          {modal === 'manual' && (
+            <ManualEntryModal 
+              players={players}
+              selectedPlayerId={selectedPlayerId}
+              setSelectedPlayerId={setSelectedPlayerId}
+              onClose={() => setModal(null)}
+              onSubmit={(playerId, pts) => addPoints(playerId, pts, 'keyboard')}
+            />
+          )}
+
+          {/* CAMERA SCANNER MODAL */}
+          {modal === 'camera' && (
+            <CameraScannerModal 
+              players={players}
+              selectedPlayerId={selectedPlayerId}
+              setSelectedPlayerId={setSelectedPlayerId}
+              onClose={() => setModal(null)}
+              onSubmit={(playerId, pts) => addPoints(playerId, pts, 'camera')}
+            />
+          )}
+
+          {/* SETTINGS / TARGET SCORE MODAL */}
+          {modal === 'settings' && (
+            <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
+                <h3 class="text-lg font-bold text-white mb-2">Edit Winning Target</h3>
+                <p class="text-xs text-slate-400 mb-4">Default is 151. Choose standard domino thresholds or enter custom points.</p>
+                
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                  {[100, 151, 200].map(val => (
+                    <button
+                      key={val}
+                      onClick={() => setTargetScore(val)}
+                      class={`py-2 text-sm font-bold rounded-lg border ${
+                        targetScore === val ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700'
+                      }`}
+                    >
+                      {val} pts
+                    </button>
+                  ))}
+                </div>
+
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Custom Target Points:</label>
+                <input 
+                  type="number" 
+                  value={targetScore}
+                  onChange={(e) => setTargetScore(parseInt(e.target.value) || 0)}
+                  class="w-full bg-slate-950 border border-slate-700 text-white font-bold text-lg rounded-xl px-4 py-2.5 mb-5 focus:outline-none focus:border-emerald-500"
+                />
+
+                <div class="flex gap-2">
+                  <button 
+                    onClick={() => setModal(null)}
+                    class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl transition"
+                  >
+                    Save & Done
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* WINNER MODAL */}
+          {modal === 'winner' && winner && (
+            <div class="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+              <div class="bg-gradient-to-b from-slate-900 to-slate-950 border border-emerald-500/50 w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl animate-bounce-short">
+                <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl">
+                  🏆
+                </div>
+                <h2 class="text-2xl font-black text-white">{winner.name} Wins!</h2>
+                <p class="text-slate-400 text-sm mt-1">Reached {winner.score} points (Target: {targetScore})</p>
+
+                <div class="mt-6 flex flex-col gap-2">
+                  <button 
+                    onClick={() => {
+                      resetGame();
+                      setModal(null);
+                    }}
+                    class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition shadow-lg shadow-emerald-950"
+                  >
+                    Play Again
+                  </button>
+                  <button 
+                    onClick={() => setModal(null)}
+                    class="w-full bg-slate-800 text-slate-300 font-semibold py-2.5 rounded-xl transition"
+                  >
+                    Review Scores
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // --- MANUAL / KEYBOARD ENTRY MODAL ---
+    function ManualEntryModal({ players, selectedPlayerId, setSelectedPlayerId, onClose, onSubmit }) {
+      const [inputPoints, setInputPoints] = useState('');
+
+      const handleQuickAdd = (num) => {
+        const current = parseInt(inputPoints || '0', 10);
+        setInputPoints((current + num).toString());
+      };
+
+      const handleKeypad = (digit) => {
+        if (inputPoints.length >= 4) return;
+        setInputPoints(prev => (prev === '0' ? digit : prev + digit));
+      };
+
+      const handleBackspace = () => {
+        setInputPoints(prev => prev.slice(0, -1));
+      };
+
+      const submit = () => {
+        const pts = parseInt(inputPoints, 10);
+        if (pts > 0) {
+          onSubmit(selectedPlayerId, pts);
+        }
+      };
+
+      return (
+        <div class="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex flex-col justify-end p-3 max-w-md mx-auto">
+          <div class="bg-slate-900 border border-slate-700 rounded-3xl p-4 shadow-2xl flex flex-col">
+            <div class="flex justify-between items-center mb-3">
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Score Round</span>
+              <button onClick={onClose} class="text-slate-400 hover:text-white p-1">✕</button>
+            </div>
+
+            {/* Select Target Player */}
+            <div class="grid grid-cols-2 gap-2 mb-3">
+              {players.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setSelectedPlayerId(p.id)}
+                  class={`py-2 px-3 rounded-xl font-bold text-sm flex items-center justify-between border transition ${
+                    selectedPlayerId === p.id 
+                      ? (p.id === 1 ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-blue-500 text-white border-blue-400')
+                      : 'bg-slate-800 text-slate-300 border-slate-700'
+                  }`}
+                >
+                  <span class="truncate">{p.name}</span>
+                  <span class="text-xs opacity-75">({p.score})</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Points Display */}
+            <div class="bg-slate-950 border border-slate-800 rounded-2xl py-3 px-4 text-center mb-3">
+              <span class="text-4xl font-black text-emerald-400">{inputPoints || '0'}</span>
+              <span class="text-slate-500 text-xs font-semibold ml-1">pts</span>
+            </div>
+
+            {/* Quick Chips */}
+            <div class="grid grid-cols-4 gap-2 mb-3">
+              {[5, 10, 15, 20].map(val => (
+                <button
+                  key={val}
+                  onClick={() => handleQuickAdd(val)}
+                  class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-xs font-bold py-2 rounded-lg text-slate-200 border border-slate-700"
+                >
+                  +{val}
+                </button>
+              ))}
+            </div>
+
+            {/* Numpad */}
+            <div class="grid grid-cols-3 gap-2 mb-3">
+              {['1','2','3','4','5','6','7','8','9','C','0','⌫'].map(btn => {
+                if (btn === 'C') {
+                  return (
+                    <button key={btn} onClick={() => setInputPoints('')} class="bg-slate-800 text-rose-400 font-bold text-lg py-3 rounded-xl active:bg-slate-700">
+                      C
+                    </button>
+                  );
+                }
+                if (btn === '⌫') {
+                  return (
+                    <button key={btn} onClick={handleBackspace} class="bg-slate-800 text-slate-300 font-bold text-lg py-3 rounded-xl active:bg-slate-700">
+                      ⌫
+                    </button>
+                  );
+                }
+                return (
+                  <button
+                    key={btn}
+                    onClick={() => handleKeypad(btn)}
+                    class="bg-slate-800 text-white font-bold text-xl py-3 rounded-xl active:bg-slate-700"
+                  >
+                    {btn}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={submit}
+              disabled={!inputPoints || parseInt(inputPoints) <= 0}
+              class="w-full bg-emerald-500 disabled:opacity-40 text-slate-950 font-black py-3.5 rounded-xl text-base shadow-lg transition"
+            >
+              Add Points
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // --- CAMERA DOMINO PIP SCANNER MODAL ---
+    function CameraScannerModal({ players, selectedPlayerId, setSelectedPlayerId, onClose, onSubmit }) {
+      const videoRef = useRef(null);
+      const canvasRef = useRef(null);
+      const [cameraActive, setCameraActive] = useState(false);
+      const [detectedPips, setDetectedPips] = useState(0);
+      const [detectedCoords, setDetectedCoords] = useState([]);
+      const [tileInverted, setTileInverted] = useState(false); // false = white tile with black dots, true = black tile with white dots
+      const [stream, setStream] = useState(null);
+      const [manualAdjustment, setManualAdjustment] = useState(0);
+
+      // Start Camera
+      useEffect(() => {
+        let currentStream = null;
+        async function startVideo() {
+          try {
+            currentStream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } }
+            });
+            if (videoRef.current) {
+              videoRef.current.srcObject = currentStream;
+              videoRef.current.play();
+              setCameraActive(true);
+              setStream(currentStream);
+            }
+          } catch (err) {
+            console.error("Camera error:", err);
+            alert("Unable to access camera. Please allow camera permissions or enter points with the keyboard.");
+            onClose();
+          }
+        }
+        startVideo();
+
+        return () => {
+          if (currentStream) {
+            currentStream.getTracks().forEach(track => track.stop());
+          }
+        };
+      }, []);
+
+      // Vision Loop: scan frame every 400ms
+      useEffect(() => {
+        if (!cameraActive) return;
+
+        const interval = setInterval(() => {
+          scanFrame();
+        }, 350);
+
+        return () => clearInterval(interval);
+      }, [cameraActive, tileInverted]);
+
+      // Computer Vision: Blob / Pip detector on canvas
+      const scanFrame = () => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (!video || !canvas || video.readyState !== 4) return;
+
+        const ctx = canvas.getContext('2d');
+        const width = 300;
+        const height = 300;
+        canvas.width = width;
+        canvas.height = height;
+
+        // Crop center region of video
+        const vW = video.videoWidth;
+        const vH = video.videoHeight;
+        const cropSize = Math.min(vW, vH) * 0.55;
+        const startX = (vW - cropSize) / 2;
+        const startY = (vH - cropSize) / 2;
+
+        ctx.drawImage(video, startX, startY, cropSize, cropSize, 0, 0, width, height);
+
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const data = imgData.data;
+
+        // Pip blob analysis
+        const threshold = 85; 
+        const hits = [];
+
+        // Grid sample for circular dark dots (or white dots if tileInverted)
+        const step = 8;
+        for (let y = 15; y < height - 15; y += step) {
+          for (let x = 15; x < width - 15; x += step) {
+            const idx = (y * width + x) * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+
+            const isDotPixel = tileInverted ? brightness > (255 - threshold) : brightness < threshold;
+
+            if (isDotPixel) {
+              // Cluster neighbor check to ensure it's not single pixel noise
+              const isCluster = hits.some(h => Math.hypot(h.x - x, h.y - y) < 18);
+              if (!isCluster) {
+                hits.push({ x, y });
+              }
+            }
+          }
+        }
+
+        // Limit maximum realistic domino half or full pips (0 to 18)
+        const cleanCount = Math.min(18, hits.length);
+        setDetectedPips(cleanCount);
+        setDetectedCoords(hits.slice(0, 18));
+      };
+
+      const finalCount = Math.max(0, detectedPips + manualAdjustment);
+
+      return (
+        <div class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col justify-between p-4 max-w-md mx-auto">
+          {/* Top Bar */}
+          <div class="flex justify-between items-center text-white pt-2">
+            <div>
+              <h4 class="font-bold text-sm">Domino Pip Scanner</h4>
+              <p class="text-xs text-slate-400">Aim center square at the domino dots</p>
+            </div>
+            <button onClick={onClose} class="text-slate-400 hover:text-white bg-slate-800 p-2 rounded-full">✕</button>
+          </div>
+
+          {/* Viewfinder Area */}
+          <div class="relative w-full aspect-square max-h-[340px] my-auto rounded-3xl overflow-hidden border border-slate-700 bg-black flex items-center justify-center">
+            <video 
+              ref={videoRef} 
+              playsInline 
+              muted 
+              class="w-full h-full object-cover"
+            />
+            <canvas ref={canvasRef} class="hidden" />
+
+            {/* Viewfinder Target Reticle */}
+            <div class="absolute inset-8 border-2 border-emerald-400/80 rounded-2xl pointer-events-none scanner-viewfinder flex items-center justify-center">
+              <div class="w-full h-0.5 bg-emerald-400/30"></div>
+            </div>
+
+            {/* Pip detections visualization overlay */}
+            <div class="absolute inset-8 pointer-events-none">
+              {detectedCoords.map((pt, i) => (
+                <div
+                  key={i}
+                  class="absolute w-3.5 h-3.5 -ml-1.5 -mt-1.5 rounded-full border-2 border-emerald-400 bg-emerald-500/40 animate-pulse"
+                  style={{
+                    left: `${(pt.x / 300) * 100}%`,
+                    top: `${(pt.y / 300) * 100}%`
+                  }}
+                />
+              ))}
+            </div>
+
+            {/* Invert Color Switch */}
+            <button
+              onClick={() => setTileInverted(!tileInverted)}
+              class="absolute bottom-3 right-3 bg-black/70 backdrop-blur text-xs px-2.5 py-1.5 rounded-xl border border-slate-700 text-slate-300 font-semibold active:scale-95"
+            >
+              Mode: {tileInverted ? 'Black Tile (White Dots)' : 'White Tile (Black Dots)'}
+            </button>
+          </div>
+
+          {/* Player Assign & Confirmation */}
+          <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
+            {/* Player select */}
+            <div class="flex gap-2">
+              {players.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setSelectedPlayerId(p.id)}
+                  class={`flex-1 py-1.5 px-3 rounded-lg font-bold text-xs border ${
+                    selectedPlayerId === p.id 
+                      ? (p.id === 1 ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-blue-500 text-white border-blue-400')
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  Give to: {p.name}
+                </button>
+              ))}
+            </div>
+
+            {/* Detected Count with quick +/- adjustments */}
+            <div class="flex items-center justify-between bg-slate-950 px-4 py-2.5 rounded-xl border border-slate-800">
+              <span class="text-xs font-semibold text-slate-400">Pips Counted:</span>
+              <div class="flex items-center gap-3">
+                <button 
+                  onClick={() => setManualAdjustment(m => m - 1)}
+                  class="w-7 h-7 bg-slate-800 hover:bg-slate-700 rounded-md font-bold text-sm text-slate-300"
+                >
+                  -
+                </button>
+                <span class="text-2xl font-black text-emerald-400 min-w-8 text-center">{finalCount}</span>
+                <button 
+                  onClick={() => setManualAdjustment(m => m + 1)}
+                  class="w-7 h-7 bg-slate-800 hover:bg-slate-700 rounded-md font-bold text-sm text-slate-300"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {/* Action */}
+            <button
+              onClick={() => onSubmit(selectedPlayerId, finalCount)}
+              disabled={finalCount <= 0}
+              class="w-full bg-emerald-500 disabled:opacity-40 hover:bg-emerald-400 text-slate-950 font-black py-3 rounded-xl transition shadow-lg shadow-emerald-950"
+            >
+              Confirm +{finalCount} Points
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Render App
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<DominoApp />);
+  </script>
+</body>
+</html>
