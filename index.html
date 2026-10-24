@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Domino Points - Scorekeeper & Scanner</title>
   
+  <!-- Mobile & PWA Metas -->
+  <meta name="theme-color" content="#10b981" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Domino Points" />
+  <link rel="apple-touch-icon" href="https://api.iconify.design/lucide:dice-5.svg?color=%2310b981" />
+
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- React & ReactDOM -->
@@ -14,19 +21,47 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <!-- Canvas Confetti -->
   <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Noto+Kufi+Arabic:wght@600;700;800&display=swap');
     body {
       font-family: 'Outfit', sans-serif;
       touch-action: manipulation;
+    }
+    .ar-font {
+      font-family: 'Noto Kufi Arabic', sans-serif;
     }
     .scanner-viewfinder {
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.65);
     }
   </style>
+
+  <!-- Dynamic Web App Manifest for Android Installation -->
+  <script>
+    const manifest = {
+      name: "Domino Points",
+      short_name: "DominoPts",
+      description: "Scorekeeper and Camera Scanner for Dominoes",
+      start_url: window.location.href,
+      display: "standalone",
+      background_color: "#020617",
+      theme_color: "#10b981",
+      icons: [
+        {
+          src: "https://api.iconify.design/lucide:dice-5.svg?color=%2310b981",
+          sizes: "192x192 512x512",
+          type: "image/svg+xml"
+        }
+      ]
+    };
+    const stringManifest = JSON.stringify(manifest);
+    const blob = new Blob([stringManifest], {type: 'application/json'});
+    const manifestURL = URL.createObjectURL(blob);
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = manifestURL;
+    document.head.appendChild(link);
+  </script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-white">
   <div id="root"></div>
@@ -53,9 +88,54 @@
       });
 
       // UI States
-      const [modal, setModal] = useState(null); // 'manual' | 'camera' | 'settings' | 'winner'
+      const [modal, setModal] = useState(null); // 'manual' | 'camera' | 'settings' | 'winner' | 'ios-install'
       const [selectedPlayerId, setSelectedPlayerId] = useState(1);
       const [winner, setWinner] = useState(null);
+
+      // PWA Install State
+      const [deferredPrompt, setDeferredPrompt] = useState(null);
+      const [isInstalled, setIsInstalled] = useState(false);
+      const [isIOS, setIsIOS] = useState(false);
+
+      useEffect(() => {
+        // Detect iOS
+        const userAgent = window.navigator.userAgent.toLowerCase();
+        const isIosDevice = /iphone|ipad|ipod/.test(userAgent);
+        setIsIOS(isIosDevice);
+
+        // Detect if already installed / standalone
+        if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+          setIsInstalled(true);
+        }
+
+        // Listen for Chrome / Android install prompt
+        const handleBeforeInstall = (e) => {
+          e.preventDefault();
+          setDeferredPrompt(e);
+        };
+        window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+
+        return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+      }, []);
+
+      // Trigger Install
+      const handleInstallClick = async () => {
+        if (isIOS) {
+          setModal('ios-install');
+          return;
+        }
+
+        if (deferredPrompt) {
+          deferredPrompt.prompt();
+          const { outcome } = await deferredPrompt.userChoice;
+          if (outcome === 'accepted') {
+            setIsInstalled(true);
+          }
+          setDeferredPrompt(null);
+        } else {
+          alert("To install on Android: Tap Chrome's three dots (⋮) in the top-right corner and select 'Install app' or 'Add to Home screen'.");
+        }
+      };
 
       // Save to localStorage
       useEffect(() => {
@@ -135,16 +215,31 @@
           <header class="flex items-center justify-between py-3 border-b border-slate-800">
             <div class="flex items-center space-x-2">
               <span class="bg-emerald-500 text-slate-950 font-black px-2.5 py-1 rounded-lg text-lg tracking-wider">🀄 DOMINO</span>
-              <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Points Tracker</span>
+              <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Points</span>
             </div>
 
-            <button 
-              onClick={() => setModal('settings')}
-              class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium text-slate-300"
-            >
-              <span>Goal: <strong class="text-emerald-400 font-bold">{targetScore}</strong> pts</span>
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-            </button>
+            <div class="flex items-center gap-2">
+              {/* Shortcut Install Button */}
+              {!isInstalled && (
+                <button
+                  onClick={handleInstallClick}
+                  class="flex items-center gap-1.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-extrabold px-3 py-1.5 rounded-full text-xs shadow-md shadow-emerald-950 active:scale-95 transition"
+                  title="Install App as shortcut on home screen"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                  <span>Install App</span>
+                </button>
+              )}
+
+              {/* Target Score Edit Button */}
+              <button 
+                onClick={() => setModal('settings')}
+                class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium text-slate-300"
+              >
+                <span>Goal: <strong class="text-emerald-400 font-bold">{targetScore}</strong></span>
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </button>
+            </div>
           </header>
 
           {/* Players Score Cards */}
@@ -221,9 +316,9 @@
               <span>ROUND LOG</span>
               <button onClick={resetGame} class="text-rose-400 hover:text-rose-300">Clear Game</button>
             </div>
-            <div class="overflow-y-auto flex-1 divide-y divide-slate-800/60 mt-1 max-h-56 pr-1">
+            <div class="overflow-y-auto flex-1 divide-y divide-slate-800/60 mt-1 max-h-48 pr-1">
               {rounds.length === 0 ? (
-                <div class="text-center py-8 text-slate-600 text-sm">No points recorded yet.<br/>Type points or scan domino tiles!</div>
+                <div class="text-center py-6 text-slate-600 text-sm">No points recorded yet.<br/>Type points or scan domino tiles!</div>
               ) : (
                 rounds.map(r => {
                   const p = players.find(player => player.id === r.playerId) || { name: 'Player' };
@@ -255,6 +350,53 @@
             </div>
           </div>
 
+          {/* SPONSOR SECTION */}
+          <div class="bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800/80 rounded-2xl p-3.5 shadow-lg">
+            <div class="flex items-center justify-center gap-1.5 text-center text-xs font-semibold text-slate-400 mb-2.5">
+              <span>✨ This app is sponsored by</span>
+              <span class="text-slate-500">•</span>
+              <span class="ar-font text-[11px] text-slate-300">هذا التطبيق برعاية</span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2.5">
+              {/* Sponsor 1: Dr. Ferid */}
+              <a
+                href="https://xferidx.github.io/Dr.ferid.clinic/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="group flex flex-col items-center justify-center bg-slate-900/90 hover:bg-slate-800/90 border border-teal-500/30 hover:border-teal-400/80 p-2.5 rounded-xl transition duration-200 active:scale-98 text-center shadow-sm"
+              >
+                <div class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-teal-400 animate-pulse"></span>
+                  <span class="ar-font font-bold text-xs text-teal-300 group-hover:text-teal-200 truncate">
+                    عيادة د.فريد نريد
+                  </span>
+                </div>
+                <span class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+                  Visit Clinic ↗
+                </span>
+              </a>
+
+              {/* Sponsor 2: Edelwhite */}
+              <a
+                href="https://xferidx.github.io/Edelwhite/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="group flex flex-col items-center justify-center bg-slate-900/90 hover:bg-slate-800/90 border border-emerald-500/30 hover:border-emerald-400/80 p-2.5 rounded-xl transition duration-200 active:scale-98 text-center shadow-sm"
+              >
+                <div class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span class="font-extrabold text-xs text-emerald-300 group-hover:text-emerald-200 tracking-wide uppercase">
+                    Edelwhite
+                  </span>
+                </div>
+                <span class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+                  Visit Website ↗
+                </span>
+              </a>
+            </div>
+          </div>
+
           {/* MANUAL ENTRY MODAL */}
           {modal === 'manual' && (
             <ManualEntryModal 
@@ -277,12 +419,12 @@
             />
           )}
 
-          {/* SETTINGS / TARGET SCORE MODAL */}
+          {/* EDIT TARGET SCORE MODAL */}
           {modal === 'settings' && (
             <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
               <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
-                <h3 class="text-lg font-bold text-white mb-2">Edit Winning Target</h3>
-                <p class="text-xs text-slate-400 mb-4">Default is 151. Choose standard domino thresholds or enter custom points.</p>
+                <h3 class="text-lg font-bold text-white mb-1">Edit Winning Points</h3>
+                <p class="text-xs text-slate-400 mb-4">Default is 151. Choose or enter custom points.</p>
                 
                 <div class="grid grid-cols-3 gap-2 mb-4">
                   {[100, 151, 200].map(val => (
@@ -298,7 +440,7 @@
                   ))}
                 </div>
 
-                <label class="block text-xs font-semibold text-slate-400 mb-1">Custom Target Points:</label>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Target Score:</label>
                 <input 
                   type="number" 
                   value={targetScore}
@@ -306,14 +448,52 @@
                   class="w-full bg-slate-950 border border-slate-700 text-white font-bold text-lg rounded-xl px-4 py-2.5 mb-5 focus:outline-none focus:border-emerald-500"
                 />
 
-                <div class="flex gap-2">
-                  <button 
-                    onClick={() => setModal(null)}
-                    class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl transition"
-                  >
-                    Save & Done
-                  </button>
+                <button 
+                  onClick={() => setModal(null)}
+                  class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl transition"
+                >
+                  Save & Return
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* IOS INSTALLATION INSTRUCTIONS MODAL */}
+          {modal === 'ios-install' && (
+            <div class="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+              <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-3xl p-5 shadow-2xl">
+                <div class="flex justify-between items-center mb-3">
+                  <h3 class="text-base font-bold text-white flex items-center gap-1.5">
+                    <span>📲 Install on iPhone / iPad</span>
+                  </h3>
+                  <button onClick={() => setModal(null)} class="text-slate-400 hover:text-white">✕</button>
                 </div>
+                
+                <p class="text-xs text-slate-400 mb-4">
+                  Add this app to your Home Screen to launch it quickly in full-screen mode like a native app:
+                </p>
+
+                <div class="space-y-3 text-xs text-slate-300">
+                  <div class="flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                    <span class="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">1</span>
+                    <span>Tap Safari's <strong>Share</strong> button at bottom (<svg class="inline w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/></svg>)</span>
+                  </div>
+                  <div class="flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                    <span class="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">2</span>
+                    <span>Scroll down and select <strong>"Add to Home Screen"</strong></span>
+                  </div>
+                  <div class="flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                    <span class="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">3</span>
+                    <span>Tap <strong>Add</strong> in the top-right corner. Done!</span>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => setModal(null)}
+                  class="mt-5 w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl transition"
+                >
+                  Got It!
+                </button>
               </div>
             </div>
           )}
@@ -321,7 +501,7 @@
           {/* WINNER MODAL */}
           {modal === 'winner' && winner && (
             <div class="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
-              <div class="bg-gradient-to-b from-slate-900 to-slate-950 border border-emerald-500/50 w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl animate-bounce-short">
+              <div class="bg-gradient-to-b from-slate-900 to-slate-950 border border-emerald-500/50 w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl">
                 <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl">
                   🏆
                 </div>
@@ -470,8 +650,7 @@
       const [cameraActive, setCameraActive] = useState(false);
       const [detectedPips, setDetectedPips] = useState(0);
       const [detectedCoords, setDetectedCoords] = useState([]);
-      const [tileInverted, setTileInverted] = useState(false); // false = white tile with black dots, true = black tile with white dots
-      const [stream, setStream] = useState(null);
+      const [tileInverted, setTileInverted] = useState(false);
       const [manualAdjustment, setManualAdjustment] = useState(0);
 
       // Start Camera
@@ -486,7 +665,6 @@
               videoRef.current.srcObject = currentStream;
               videoRef.current.play();
               setCameraActive(true);
-              setStream(currentStream);
             }
           } catch (err) {
             console.error("Camera error:", err);
@@ -503,7 +681,7 @@
         };
       }, []);
 
-      // Vision Loop: scan frame every 400ms
+      // Vision scan interval
       useEffect(() => {
         if (!cameraActive) return;
 
@@ -514,7 +692,7 @@
         return () => clearInterval(interval);
       }, [cameraActive, tileInverted]);
 
-      // Computer Vision: Blob / Pip detector on canvas
+      // Computer Vision: Pip detector on center region
       const scanFrame = () => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
@@ -526,7 +704,6 @@
         canvas.width = width;
         canvas.height = height;
 
-        // Crop center region of video
         const vW = video.videoWidth;
         const vH = video.videoHeight;
         const cropSize = Math.min(vW, vH) * 0.55;
@@ -538,12 +715,10 @@
         const imgData = ctx.getImageData(0, 0, width, height);
         const data = imgData.data;
 
-        // Pip blob analysis
         const threshold = 85; 
         const hits = [];
-
-        // Grid sample for circular dark dots (or white dots if tileInverted)
         const step = 8;
+
         for (let y = 15; y < height - 15; y += step) {
           for (let x = 15; x < width - 15; x += step) {
             const idx = (y * width + x) * 4;
@@ -555,7 +730,6 @@
             const isDotPixel = tileInverted ? brightness > (255 - threshold) : brightness < threshold;
 
             if (isDotPixel) {
-              // Cluster neighbor check to ensure it's not single pixel noise
               const isCluster = hits.some(h => Math.hypot(h.x - x, h.y - y) < 18);
               if (!isCluster) {
                 hits.push({ x, y });
@@ -564,7 +738,6 @@
           }
         }
 
-        // Limit maximum realistic domino half or full pips (0 to 18)
         const cleanCount = Math.min(18, hits.length);
         setDetectedPips(cleanCount);
         setDetectedCoords(hits.slice(0, 18));
@@ -593,7 +766,7 @@
             />
             <canvas ref={canvasRef} class="hidden" />
 
-            {/* Viewfinder Target Reticle */}
+            {/* Viewfinder Reticle */}
             <div class="absolute inset-8 border-2 border-emerald-400/80 rounded-2xl pointer-events-none scanner-viewfinder flex items-center justify-center">
               <div class="w-full h-0.5 bg-emerald-400/30"></div>
             </div>
@@ -623,7 +796,6 @@
 
           {/* Player Assign & Confirmation */}
           <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
-            {/* Player select */}
             <div class="flex gap-2">
               {players.map(p => (
                 <button
@@ -640,7 +812,7 @@
               ))}
             </div>
 
-            {/* Detected Count with quick +/- adjustments */}
+            {/* Detected Count with +/- fine tuner */}
             <div class="flex items-center justify-between bg-slate-950 px-4 py-2.5 rounded-xl border border-slate-800">
               <span class="text-xs font-semibold text-slate-400">Pips Counted:</span>
               <div class="flex items-center gap-3">
@@ -660,7 +832,6 @@
               </div>
             </div>
 
-            {/* Action */}
             <button
               onClick={() => onSubmit(selectedPlayerId, finalCount)}
               disabled={finalCount <= 0}
