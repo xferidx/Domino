@@ -66,7 +66,7 @@
     @keyframes float { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-3px) } }
     @keyframes shine { 0%,55% { transform: translateX(-130%) } 100% { transform: translateX(130%) } }
     .scanner-viewfinder {
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.65);
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
     }
   </style>
 
@@ -662,42 +662,96 @@
       );
     }
 
-    // --- CAMERA DOMINO PIP SCANNER MODAL ---
+    // --- CAMERA DOMINO PIP SCANNER MODAL (full screen, widest lens) ---
     function CameraScannerModal({ players, selectedPlayerId, setSelectedPlayerId, onClose, onSubmit }) {
       const videoRef = useRef(null);
       const canvasRef = useRef(null);
+      const frameRef = useRef(null);
+      const streamRef = useRef(null);
       const [cameraActive, setCameraActive] = useState(false);
+      const [lenses, setLenses] = useState([]);
+      const [lensIdx, setLensIdx] = useState(0);
       const [detectedPips, setDetectedPips] = useState(0);
       const [detectedCoords, setDetectedCoords] = useState([]);
       const [tileInverted, setTileInverted] = useState(false);
       const [manualAdjustment, setManualAdjustment] = useState(0);
 
+      const stopStream = () => {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop());
+          streamRef.current = null;
+        }
+      };
+
+      // Open a camera. With no deviceId we ask for the back camera.
+      const openCamera = async (deviceId) => {
+        stopStream();
+        const base = deviceId
+          ? { deviceId: { exact: deviceId } }
+          : { facingMode: { ideal: 'environment' } };
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { ...base, width: { ideal: 1920 }, height: { ideal: 1080 } }
+        });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          try { await videoRef.current.play(); } catch (e) {}
+        }
+        // On phones that expose ultra-wide as zoom < 1x, go to the minimum zoom
+        try {
+          const track = stream.getVideoTracks()[0];
+          const caps = track.getCapabilities ? track.getCapabilities() : {};
+          if (caps.zoom && caps.zoom.min < 1) {
+            await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] });
+          }
+        } catch (e) {}
+        return stream;
+      };
+
       useEffect(() => {
-        let currentStream = null;
-        async function startVideo() {
+        let cancelled = false;
+        (async () => {
           try {
-            currentStream = await navigator.mediaDevices.getUserMedia({
-              video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } }
-            });
-            if (videoRef.current) {
-              videoRef.current.srcObject = currentStream;
-              videoRef.current.play();
-              setCameraActive(true);
+            await openCamera();
+            if (cancelled) return;
+            // Labels are only available after permission is granted
+            const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+            const back = devs.filter(d => !/front|user|selfie|facetime/i.test(d.label));
+            const rank = d => (/ultra|0\.5/i.test(d.label) ? 0 : 1);
+            const sorted = [...back].sort((x, y) => rank(x) - rank(y));
+            setLenses(sorted);
+            const current = streamRef.current.getVideoTracks()[0].getSettings().deviceId;
+            if (sorted.length && rank(sorted[0]) === 0 && sorted[0].deviceId !== current) {
+              await openCamera(sorted[0].deviceId);
+              setLensIdx(0);
+            } else {
+              const i = sorted.findIndex(d => d.deviceId === current);
+              setLensIdx(i >= 0 ? i : 0);
             }
+            if (!cancelled) setCameraActive(true);
           } catch (err) {
-            console.error("Camera error:", err);
-            alert("Unable to access camera. Please allow camera permissions or enter points with the keyboard.");
+            console.error('Camera error:', err);
+            alert('Unable to access camera. Please allow camera permissions or enter points with the keyboard.');
             onClose();
           }
-        }
-        startVideo();
-
-        return () => {
-          if (currentStream) {
-            currentStream.getTracks().forEach(track => track.stop());
-          }
-        };
+        })();
+        return () => { cancelled = true; stopStream(); };
       }, []);
+
+      const nextLens = async () => {
+        if (lenses.length < 2) return;
+        const i = (lensIdx + 1) % lenses.length;
+        setLensIdx(i);
+        try { await openCamera(lenses[i].deviceId); } catch (e) {}
+      };
+
+      const lensName = () => {
+        const l = lenses[lensIdx];
+        if (!l) return 'Back camera';
+        if (/ultra|0\.5/i.test(l.label)) return 'Ultra wide';
+        if (/tele/i.test(l.label)) return 'Telephoto';
+        return lenses.length > 1 ? `Lens ${lensIdx + 1}/${lenses.length}` : 'Back camera';
+      };
 
       useEffect(() => {
         if (!cameraActive) return;
@@ -705,28 +759,32 @@
         return () => clearInterval(interval);
       }, [cameraActive, tileInverted]);
 
+      // Scan exactly the part of the video that is visible inside the frame
       const scanFrame = () => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        if (!video || !canvas || video.readyState !== 4) return;
+        const frame = frameRef.current;
+        if (!video || !canvas || !frame || video.readyState < 2 || !video.videoWidth) return;
 
-        const ctx = canvas.getContext('2d');
-        const width = 300;
-        const height = 300;
+        const vr = video.getBoundingClientRect();
+        const fr = frame.getBoundingClientRect();
+        const vW = video.videoWidth, vH = video.videoHeight;
+        const scale = Math.max(vr.width / vW, vr.height / vH); // object-cover
+        const offX = (vr.width - vW * scale) / 2;
+        const offY = (vr.height - vH * scale) / 2;
+        const sx = ((fr.left - vr.left) - offX) / scale;
+        const sy = ((fr.top - vr.top) - offY) / scale;
+        const sw = fr.width / scale;
+        const sh = fr.height / scale;
+
+        const width = 360;
+        const height = Math.max(120, Math.round(width * fr.height / fr.width));
         canvas.width = width;
         canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
 
-        const vW = video.videoWidth;
-        const vH = video.videoHeight;
-        const cropSize = Math.min(vW, vH) * 0.55;
-        const startX = (vW - cropSize) / 2;
-        const startY = (vH - cropSize) / 2;
-
-        ctx.drawImage(video, startX, startY, cropSize, cropSize, 0, 0, width, height);
-
-        const imgData = ctx.getImageData(0, 0, width, height);
-        const data = imgData.data;
-
+        const data = ctx.getImageData(0, 0, width, height).data;
         const threshold = 85;
         const hits = [];
         const step = 8;
@@ -734,75 +792,78 @@
         for (let y = 15; y < height - 15; y += step) {
           for (let x = 15; x < width - 15; x += step) {
             const idx = (y * width + x) * 4;
-            const r = data[idx];
-            const g = data[idx + 1];
-            const b = data[idx + 2];
-            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-
+            const brightness = (data[idx] * 299 + data[idx + 1] * 587 + data[idx + 2] * 114) / 1000;
             const isDotPixel = tileInverted ? brightness > (255 - threshold) : brightness < threshold;
-
             if (isDotPixel) {
               const isCluster = hits.some(h => Math.hypot(h.x - x, h.y - y) < 18);
-              if (!isCluster) {
-                hits.push({ x, y });
-              }
+              if (!isCluster) hits.push({ x, y });
             }
           }
         }
 
-        const cleanCount = Math.min(18, hits.length);
-        setDetectedPips(cleanCount);
-        setDetectedCoords(hits.slice(0, 18));
+        const kept = hits.slice(0, 60);
+        setDetectedPips(kept.length);
+        setDetectedCoords(kept.map(h => ({ x: h.x / width, y: h.y / height })));
       };
 
       const finalCount = Math.max(0, detectedPips + manualAdjustment);
 
       return (
-        <div class="fade-in fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col justify-between p-4 max-w-md mx-auto">
-          <div class="flex justify-between items-center text-white pt-2">
-            <div>
-              <h4 class="font-bold text-sm">Domino Pip Scanner</h4>
-              <p class="text-xs text-slate-400">Aim center square at the domino dots</p>
+        <div class="fade-in fixed inset-0 z-50 bg-black text-white overflow-hidden">
+          {/* Full-screen camera */}
+          <video ref={videoRef} playsInline muted class="absolute inset-0 w-full h-full object-cover" />
+          <canvas ref={canvasRef} class="hidden" />
+
+          {/* Top bar */}
+          <div class="absolute top-0 inset-x-0 z-10 flex items-center justify-between gap-2 px-4 pb-6 bg-gradient-to-b from-black/80 to-transparent"
+               style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 12px)' }}>
+            <div class="min-w-0">
+              <h4 class="font-bold text-sm">Domino Scanner</h4>
+              <p class="text-[11px] text-emerald-300 font-semibold truncate">{lensName()}</p>
             </div>
-            <button onClick={onClose} class="text-slate-400 hover:text-white bg-slate-800 p-2 rounded-full">✕</button>
+            <div class="flex items-center gap-2">
+              {lenses.length > 1 && (
+                <button onClick={nextLens} class="bg-black/60 backdrop-blur border border-slate-600 text-xs font-bold px-3 py-2 rounded-full active:scale-95">
+                  🔄 Lens
+                </button>
+              )}
+              <button onClick={onClose} class="bg-black/60 backdrop-blur border border-slate-600 w-9 h-9 rounded-full flex items-center justify-center active:scale-95">✕</button>
+            </div>
           </div>
 
-          <div class="relative w-full aspect-square max-h-[340px] my-auto rounded-3xl overflow-hidden border border-slate-700 bg-black flex items-center justify-center">
-            <video ref={videoRef} playsInline muted class="w-full h-full object-cover" />
-            <canvas ref={canvasRef} class="hidden" />
-
-            <div class="absolute inset-8 border-2 border-emerald-400/80 rounded-2xl pointer-events-none scanner-viewfinder flex items-center justify-center">
-              <div class="w-full h-0.5 bg-emerald-400/30"></div>
-            </div>
-
-            <div class="absolute inset-8 pointer-events-none">
-              {detectedCoords.map((pt, i) => (
-                <div
-                  key={i}
-                  class="absolute w-3.5 h-3.5 -ml-1.5 -mt-1.5 rounded-full border-2 border-emerald-400 bg-emerald-500/40 animate-pulse"
-                  style={{
-                    left: `${(pt.x / 300) * 100}%`,
-                    top: `${(pt.y / 300) * 100}%`
-                  }}
-                />
-              ))}
-            </div>
-
-            <button
-              onClick={() => setTileInverted(!tileInverted)}
-              class="absolute bottom-3 right-3 bg-black/70 backdrop-blur text-xs px-2.5 py-1.5 rounded-xl border border-slate-700 text-slate-300 font-semibold active:scale-95"
-            >
-              Mode: {tileInverted ? 'Black Tile (White Dots)' : 'White Tile (Black Dots)'}
-            </button>
+          {/* Scan frame (wide) */}
+          <div
+            ref={frameRef}
+            class="absolute left-3 right-3 border-2 border-emerald-400/90 rounded-3xl pointer-events-none scanner-viewfinder"
+            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 72px)', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 236px)' }}
+          >
+            {detectedCoords.map((pt, i) => (
+              <div
+                key={i}
+                class="absolute w-3.5 h-3.5 -ml-1.5 -mt-1.5 rounded-full border-2 border-emerald-400 bg-emerald-500/40"
+                style={{ left: `${pt.x * 100}%`, top: `${pt.y * 100}%` }}
+              />
+            ))}
           </div>
 
-          <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
+          {/* Mode toggle */}
+          <button
+            onClick={() => setTileInverted(!tileInverted)}
+            class="absolute right-5 z-10 bg-black/70 backdrop-blur text-xs px-3 py-1.5 rounded-xl border border-slate-600 text-slate-200 font-semibold active:scale-95"
+            style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 248px)' }}
+          >
+            {tileInverted ? '⚫ Black tile' : '⚪ White tile'}
+          </button>
+
+          {/* Bottom panel */}
+          <div class="absolute bottom-0 inset-x-0 z-10 glass border-t border-slate-700 rounded-t-3xl p-4 flex flex-col gap-3"
+               style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)' }}>
             <div class="flex gap-2">
               {players.map(p => (
                 <button
                   key={p.id}
                   onClick={() => setSelectedPlayerId(p.id)}
-                  class={`flex-1 py-1.5 px-3 rounded-lg font-bold text-xs border ${
+                  class={`flex-1 py-2 px-3 rounded-xl font-bold text-xs border truncate ${
                     selectedPlayerId === p.id
                       ? (p.id === 1 ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-blue-500 text-white border-blue-400')
                       : 'bg-slate-800 text-slate-400 border-slate-700'
@@ -813,22 +874,12 @@
               ))}
             </div>
 
-            <div class="flex items-center justify-between bg-slate-950 px-4 py-2.5 rounded-xl border border-slate-800">
-              <span class="text-xs font-semibold text-slate-400">Pips Counted:</span>
+            <div class="flex items-center justify-between bg-slate-950/80 px-4 py-2 rounded-xl border border-slate-800">
+              <span class="text-xs font-semibold text-slate-400">Pips counted</span>
               <div class="flex items-center gap-3">
-                <button
-                  onClick={() => setManualAdjustment(m => m - 1)}
-                  class="w-7 h-7 bg-slate-800 hover:bg-slate-700 rounded-md font-bold text-sm text-slate-300"
-                >
-                  -
-                </button>
-                <span class="text-2xl font-black text-emerald-400 min-w-8 text-center">{finalCount}</span>
-                <button
-                  onClick={() => setManualAdjustment(m => m + 1)}
-                  class="w-7 h-7 bg-slate-800 hover:bg-slate-700 rounded-md font-bold text-sm text-slate-300"
-                >
-                  +
-                </button>
+                <button onClick={() => setManualAdjustment(m => m - 1)} class="w-9 h-9 bg-slate-800 rounded-lg font-bold text-lg text-slate-200 active:scale-95">−</button>
+                <span class="tabular text-3xl font-black text-emerald-400 min-w-10 text-center">{finalCount}</span>
+                <button onClick={() => setManualAdjustment(m => m + 1)} class="w-9 h-9 bg-slate-800 rounded-lg font-bold text-lg text-slate-200 active:scale-95">+</button>
               </div>
             </div>
 
