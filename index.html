@@ -424,7 +424,7 @@
                 <div class="flex items-center gap-1.5">
                   <span class="w-2 h-2 rounded-full bg-teal-400 animate-pulse"></span>
                   <span class="ar-font font-bold text-xs text-teal-300 group-hover:text-teal-200 truncate">
-                    عيادة د.فريد مؤيد
+                    عيادة د.فريد نريد
                   </span>
                 </div>
                 <span class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
@@ -720,12 +720,129 @@
       );
     }
 
+    // --- PIP DETECTOR ---
+    // Finds domino pips: locate the tile material (large bright/low-saturation or dark region),
+    // then count round holes inside it. Divider bars, wood grain and shadows are ignored by shape.
+    function detectPips(data, w, h, inverted) {
+      const n = w * h;
+      const V = new Uint8Array(n), S = new Uint8Array(n);
+      for (let i = 0, p = 0; i < n; i++, p += 4) {
+        const r = data[p], g = data[p + 1], b = data[p + 2];
+        const mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        const mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        V[i] = mx;
+        S[i] = mx ? ((mx - mn) * 255 / mx) | 0 : 0;
+      }
+
+      // 1. Tile mask
+      let mask = new Uint8Array(n);
+      if (!inverted) {
+        // Tiles are the brightest large thing in view (works even with tinted white balance)
+        const hist = new Uint32Array(256);
+        for (let i = 0; i < n; i++) if (S[i] < 120) hist[V[i]]++;
+        let total = 0;
+        for (let v = 0; v < 256; v++) total += hist[v];
+        if (total < n * 0.05) return { count: 0, points: [] };
+        let acc = 0, ref = 255;
+        for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= total * 0.06) { ref = v; break; } }
+        const vT = Math.max(60, ref * 0.82);
+        for (let i = 0; i < n; i++) mask[i] = (S[i] < 120 && V[i] > vT) ? 1 : 0;
+      } else {
+        for (let i = 0; i < n; i++) mask[i] = (V[i] < 85 && S[i] < 110) ? 1 : 0;
+      }
+
+      // 2. Remove tiny specks (opening with a cross)
+      const tmp = new Uint8Array(n);
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        tmp[i] = (mask[i] && mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w]) ? 1 : 0;
+      }
+      mask = new Uint8Array(n);
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        mask[i] = (tmp[i] || tmp[i - 1] || tmp[i + 1] || tmp[i - w] || tmp[i + w]) ? 1 : 0;
+      }
+
+      // 3. Keep only large components (the tiles)
+      const label = new Int32Array(n);
+      const stack = new Int32Array(n);
+      const areas = [0];
+      let nl = 0;
+      for (let s0 = 0; s0 < n; s0++) {
+        if (!mask[s0] || label[s0]) continue;
+        nl++;
+        let sp = 0, area = 0;
+        stack[sp++] = s0; label[s0] = nl;
+        while (sp) {
+          const i = stack[--sp]; area++;
+          const x = i % w;
+          if (x > 0 && mask[i - 1] && !label[i - 1]) { label[i - 1] = nl; stack[sp++] = i - 1; }
+          if (x < w - 1 && mask[i + 1] && !label[i + 1]) { label[i + 1] = nl; stack[sp++] = i + 1; }
+          if (i >= w && mask[i - w] && !label[i - w]) { label[i - w] = nl; stack[sp++] = i - w; }
+          if (i < n - w && mask[i + w] && !label[i + w]) { label[i + w] = nl; stack[sp++] = i + w; }
+        }
+        areas.push(area);
+      }
+      const minTile = Math.max(300, n * 0.004);
+      const tile = new Uint8Array(n);
+      let tileCount = 0;
+      for (let i = 0; i < n; i++) if (label[i] && areas[label[i]] >= minTile) { tile[i] = 1; }
+      for (let l = 1; l <= nl; l++) if (areas[l] >= minTile) tileCount++;
+      if (!tileCount) return { count: 0, points: [] };
+
+      // 4. Background = everything not tile that touches the image border
+      const bg = new Uint8Array(n);
+      let sp = 0;
+      const push = i => { if (!tile[i] && !bg[i]) { bg[i] = 1; stack[sp++] = i; } };
+      for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+      for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+      while (sp) {
+        const i = stack[--sp];
+        const x = i % w;
+        if (x > 0) push(i - 1);
+        if (x < w - 1) push(i + 1);
+        if (i >= w) push(i - w);
+        if (i < n - w) push(i + w);
+      }
+
+      // 5. Holes inside tiles = pips, divider bars, noise. Keep the round ones.
+      const seen = new Uint8Array(n);
+      const cand = [];
+      for (let s0 = 0; s0 < n; s0++) {
+        if (tile[s0] || bg[s0] || seen[s0]) continue;
+        let area = 0, sx = 0, sy = 0, x0 = w, x1 = 0, y0 = h, y1 = 0;
+        sp = 0; stack[sp++] = s0; seen[s0] = 1;
+        while (sp) {
+          const i = stack[--sp];
+          const x = i % w, y = (i - x) / w;
+          area++; sx += x; sy += y;
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          if (x > 0 && !tile[i - 1] && !bg[i - 1] && !seen[i - 1]) { seen[i - 1] = 1; stack[sp++] = i - 1; }
+          if (x < w - 1 && !tile[i + 1] && !bg[i + 1] && !seen[i + 1]) { seen[i + 1] = 1; stack[sp++] = i + 1; }
+          if (i >= w && !tile[i - w] && !bg[i - w] && !seen[i - w]) { seen[i - w] = 1; stack[sp++] = i - w; }
+          if (i < n - w && !tile[i + w] && !bg[i + w] && !seen[i + w]) { seen[i + w] = 1; stack[sp++] = i + w; }
+        }
+        const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+        const aspect = bw / bh, fill = area / (bw * bh);
+        if (area >= 12 && aspect > 0.65 && aspect < 1.55 && fill > 0.6 && fill < 0.95) {
+          cand.push({ area, x: sx / area / w, y: sy / area / h });
+        }
+      }
+      if (!cand.length) return { count: 0, points: [] };
+      const sorted = cand.map(c => c.area).sort((a, b) => a - b);
+      const med = sorted[sorted.length >> 1];
+      const pips = cand.filter(c => c.area > med * 0.45 && c.area < med * 2.2);
+      return { count: pips.length, points: pips.map(p => ({ x: p.x, y: p.y })) };
+    }
+
+
     // --- CAMERA DOMINO PIP SCANNER MODAL (full screen, widest lens) ---
     function CameraScannerModal({ players, selectedPlayerId, setSelectedPlayerId, onClose, onSubmit }) {
       const videoRef = useRef(null);
       const canvasRef = useRef(null);
       const frameRef = useRef(null);
       const streamRef = useRef(null);
+      const historyRef = useRef([]);
       const [cameraActive, setCameraActive] = useState(false);
       const [lenses, setLenses] = useState([]);
       const [lensIdx, setLensIdx] = useState(0);
@@ -813,7 +930,7 @@
 
       useEffect(() => {
         if (!cameraActive) return;
-        const interval = setInterval(() => { scanFrame(); }, 350);
+        const interval = setInterval(() => { scanFrame(); }, 500);
         return () => clearInterval(interval);
       }, [cameraActive, tileInverted]);
 
@@ -835,33 +952,23 @@
         const sw = fr.width / scale;
         const sh = fr.height / scale;
 
-        const width = 360;
+        const width = 640;
         const height = Math.max(120, Math.round(width * fr.height / fr.width));
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
 
-        const data = ctx.getImageData(0, 0, width, height).data;
-        const threshold = 85;
-        const hits = [];
-        const step = 8;
+        const img = ctx.getImageData(0, 0, width, height);
+        const result = detectPips(img.data, width, height, tileInverted);
 
-        for (let y = 15; y < height - 15; y += step) {
-          for (let x = 15; x < width - 15; x += step) {
-            const idx = (y * width + x) * 4;
-            const brightness = (data[idx] * 299 + data[idx + 1] * 587 + data[idx + 2] * 114) / 1000;
-            const isDotPixel = tileInverted ? brightness > (255 - threshold) : brightness < threshold;
-            if (isDotPixel) {
-              const isCluster = hits.some(h => Math.hypot(h.x - x, h.y - y) < 18);
-              if (!isCluster) hits.push({ x, y });
-            }
-          }
-        }
-
-        const kept = hits.slice(0, 60);
-        setDetectedPips(kept.length);
-        setDetectedCoords(kept.map(h => ({ x: h.x / width, y: h.y / height })));
+        // Smooth over the last few frames so the number doesn't flicker
+        const hist = historyRef.current;
+        hist.push(result.count);
+        if (hist.length > 5) hist.shift();
+        const sortedHist = [...hist].sort((x, y) => x - y);
+        setDetectedPips(sortedHist[sortedHist.length >> 1]);
+        setDetectedCoords(result.points);
       };
 
       const finalCount = Math.max(0, detectedPips + manualAdjustment);
@@ -906,7 +1013,7 @@
 
           {/* Mode toggle */}
           <button
-            onClick={() => setTileInverted(!tileInverted)}
+            onClick={() => { historyRef.current = []; setTileInverted(!tileInverted); }}
             class="absolute right-5 z-10 bg-black/70 backdrop-blur text-xs px-3 py-1.5 rounded-xl border border-slate-600 text-slate-200 font-semibold active:scale-95"
             style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 248px)' }}
           >
