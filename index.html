@@ -17,11 +17,65 @@
 
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- React & ReactDOM -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <!-- Babel -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Loads React (jsdelivr, then unpkg as backup) and starts the app. No in-browser Babel needed. -->
+  <script>
+    (function () {
+      var hosts = ['https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/'];
+      var files = ['react@18.3.1/umd/react.production.min.js', 'react-dom@18.3.1/umd/react-dom.production.min.js'];
+
+      function showError(msg) {
+        var root = document.getElementById('root');
+        if (root && root.childElementCount > 0) return;
+        if (document.getElementById('boot-error')) return;
+        var d = document.createElement('div');
+        d.id = 'boot-error';
+        d.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;background:#020617;color:#e2e8f0;font-family:sans-serif;text-align:center';
+        d.innerHTML = '<div style="font-size:18px;font-weight:700">Domino Points could not start</div>' +
+          '<div style="font-size:12px;color:#94a3b8;max-width:320px;word-break:break-word"></div>' +
+          '<button id="be-reload" style="background:#10b981;color:#022c22;font-weight:700;border:0;border-radius:12px;padding:12px 22px;font-size:15px">Reload</button>' +
+          '<button id="be-reset" style="background:#1e293b;color:#cbd5e1;border:1px solid #334155;border-radius:12px;padding:10px 18px;font-size:13px">Reset app data and reload</button>';
+        d.children[1].textContent = String(msg || '');
+        document.body.appendChild(d);
+        document.getElementById('be-reload').onclick = function () { location.reload(); };
+        document.getElementById('be-reset').onclick = function () {
+          try { localStorage.clear(); } catch (e) {}
+          var jobs = [];
+          if (window.caches) jobs.push(caches.keys().then(function (k) { return Promise.all(k.map(function (n) { return caches.delete(n); })); }));
+          if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (r) { return Promise.all(r.map(function (x) { return x.unregister(); })); }));
+          Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+        };
+      }
+
+      window.addEventListener('error', function (e) {
+        setTimeout(function () { showError((e && e.message) || 'Unknown error'); }, 80);
+      });
+
+      function load(file, i, ok, fail) {
+        if (i >= hosts.length) return fail();
+        var s = document.createElement('script');
+        s.src = hosts[i] + file;
+        s.async = false;
+        s.onload = ok;
+        s.onerror = function () { s.remove(); load(file, i + 1, ok, fail); };
+        document.head.appendChild(s);
+      }
+      function start() {
+        try { window.__startApp(); } catch (e) { showError(e && e.message); }
+      }
+      function fail() { showError('Could not download the app libraries. Check your internet connection.'); }
+
+      load(files[0], 0, function () {
+        load(files[1], 0, function () {
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+          else start();
+        }, fail);
+      }, fail);
+
+      setTimeout(function () { showError('The app took too long to start. Check your internet connection.'); }, 12000);
+    })();
+  </script>
+
   <!-- Canvas Confetti -->
   <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
 
@@ -92,320 +146,1119 @@
 <body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-white">
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
-
-    // --- MAIN APP COMPONENT ---
-    function DominoApp() {
-      // Game State
-      const [targetScore, setTargetScore] = useState(() => {
-        return parseInt(localStorage.getItem('domino_target') || '151', 10);
-      });
-      const [players, setPlayers] = useState(() => {
-        const saved = localStorage.getItem('domino_players');
-        return saved ? JSON.parse(saved) : [
-          { id: 1, name: 'Player 1', score: 0 },
-          { id: 2, name: 'Player 2', score: 0 }
-        ];
-      });
-      const [rounds, setRounds] = useState(() => {
-        const saved = localStorage.getItem('domino_rounds');
-        return saved ? JSON.parse(saved) : [];
-      });
-
-      const [sets, setSets] = useState(() => {
-        const saved = localStorage.getItem('domino_sets');
-        return saved ? JSON.parse(saved) : { 1: 0, 2: 0 };
-      });
-      const [overWinner, setOverWinner] = useState(() => {
-        const v = localStorage.getItem('domino_over');
-        return v ? parseInt(v, 10) : null;
-      });
-
-      // UI States
-      const [modal, setModal] = useState(null); // 'manual' | 'camera' | 'settings' | 'winner' | 'install-help'
-      const [selectedPlayerId, setSelectedPlayerId] = useState(1);
-      const [winner, setWinner] = useState(null);
-
-      // Install state
-      const [canInstall, setCanInstall] = useState(!!window.__installPrompt);
-      const [isInstalled, setIsInstalled] = useState(false);
-      const [isIOS, setIsIOS] = useState(false);
-
-      useEffect(() => {
-        const ua = window.navigator.userAgent.toLowerCase();
-        setIsIOS(/iphone|ipad|ipod/.test(ua) || (ua.includes('macintosh') && navigator.maxTouchPoints > 1));
-
-        if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
-          setIsInstalled(true);
-        }
-
-        const onReady = () => setCanInstall(true);
-        const onDone = () => { setIsInstalled(true); setCanInstall(false); };
-        window.addEventListener('install-ready', onReady);
-        window.addEventListener('install-done', onDone);
-        return () => {
-          window.removeEventListener('install-ready', onReady);
-          window.removeEventListener('install-done', onDone);
+  <script>
+    window.__startApp = function () {
+      const {
+        useState,
+        useEffect,
+        useRef
+      } = React;
+      function DominoApp() {
+        const [targetScore, setTargetScore] = useState(() => {
+          return parseInt(localStorage.getItem('domino_target') || '151', 10);
+        });
+        const [players, setPlayers] = useState(() => {
+          const saved = localStorage.getItem('domino_players');
+          return saved ? JSON.parse(saved) : [{
+            id: 1,
+            name: 'Player 1',
+            score: 0
+          }, {
+            id: 2,
+            name: 'Player 2',
+            score: 0
+          }];
+        });
+        const [rounds, setRounds] = useState(() => {
+          const saved = localStorage.getItem('domino_rounds');
+          return saved ? JSON.parse(saved) : [];
+        });
+        const [sets, setSets] = useState(() => {
+          const saved = localStorage.getItem('domino_sets');
+          return saved ? JSON.parse(saved) : {
+            1: 0,
+            2: 0
+          };
+        });
+        const [overWinner, setOverWinner] = useState(() => {
+          const v = localStorage.getItem('domino_over');
+          return v ? parseInt(v, 10) : null;
+        });
+        const [modal, setModal] = useState(null);
+        const [selectedPlayerId, setSelectedPlayerId] = useState(1);
+        const [winner, setWinner] = useState(null);
+        const [canInstall, setCanInstall] = useState(!!window.__installPrompt);
+        const [isInstalled, setIsInstalled] = useState(false);
+        const [isIOS, setIsIOS] = useState(false);
+        useEffect(() => {
+          const ua = window.navigator.userAgent.toLowerCase();
+          setIsIOS(/iphone|ipad|ipod/.test(ua) || ua.includes('macintosh') && navigator.maxTouchPoints > 1);
+          if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+            setIsInstalled(true);
+          }
+          const onReady = () => setCanInstall(true);
+          const onDone = () => {
+            setIsInstalled(true);
+            setCanInstall(false);
+          };
+          window.addEventListener('install-ready', onReady);
+          window.addEventListener('install-done', onDone);
+          return () => {
+            window.removeEventListener('install-ready', onReady);
+            window.removeEventListener('install-done', onDone);
+          };
+        }, []);
+        const handleInstallClick = async () => {
+          const prompt = window.__installPrompt;
+          if (prompt) {
+            prompt.prompt();
+            const {
+              outcome
+            } = await prompt.userChoice;
+            if (outcome === 'accepted') setIsInstalled(true);
+            window.__installPrompt = null;
+            setCanInstall(false);
+          } else {
+            setModal('install-help');
+          }
         };
-      }, []);
-
-      const handleInstallClick = async () => {
-        const prompt = window.__installPrompt;
-        if (prompt) {
-          prompt.prompt();
-          const { outcome } = await prompt.userChoice;
-          if (outcome === 'accepted') setIsInstalled(true);
-          window.__installPrompt = null;
-          setCanInstall(false);
-        } else {
-          setModal('install-help'); // iOS / browsers without the native prompt
+        useEffect(() => {
+          localStorage.setItem('domino_target', targetScore);
+          localStorage.setItem('domino_players', JSON.stringify(players));
+          localStorage.setItem('domino_rounds', JSON.stringify(rounds));
+        }, [players, targetScore, rounds]);
+        useEffect(() => {
+          localStorage.setItem('domino_sets', JSON.stringify(sets));
+          localStorage.setItem('domino_over', overWinner === null ? '' : String(overWinner));
+        }, [sets, overWinner]);
+        useEffect(() => {
+          const someoneWon = targetScore > 0 && (players[0].score >= targetScore || players[1].score >= targetScore);
+          if (someoneWon) {
+            if (overWinner === null) {
+              const champ = players[0].score > players[1].score ? players[0] : players[1];
+              setOverWinner(champ.id);
+              setSets(prev => ({
+                ...prev,
+                [champ.id]: (prev[champ.id] || 0) + 1
+              }));
+              setWinner(champ);
+              setModal('winner');
+              try {
+                confetti({
+                  particleCount: 120,
+                  spread: 70,
+                  origin: {
+                    y: 0.6
+                  }
+                });
+              } catch (e) {}
+            }
+          } else if (overWinner !== null) {
+            setSets(prev => ({
+              ...prev,
+              [overWinner]: Math.max(0, (prev[overWinner] || 0) - 1)
+            }));
+            setOverWinner(null);
+          }
+        }, [players, targetScore, overWinner]);
+        const addPoints = (playerId, points, method = 'keyboard') => {
+          if (!points || isNaN(points) || points <= 0) return;
+          const newPlayers = players.map(p => {
+            if (p.id === playerId) {
+              return {
+                ...p,
+                score: p.score + points
+              };
+            }
+            return p;
+          });
+          const newRound = {
+            id: Date.now(),
+            playerId,
+            points,
+            method,
+            time: new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit'
+            })
+          };
+          setPlayers(newPlayers);
+          setRounds([newRound, ...rounds]);
+          setModal(null);
+        };
+        const undoRound = roundId => {
+          const roundToUndo = rounds.find(r => r.id === roundId);
+          if (!roundToUndo) return;
+          setPlayers(players.map(p => {
+            if (p.id === roundToUndo.playerId) {
+              return {
+                ...p,
+                score: Math.max(0, p.score - roundToUndo.points)
+              };
+            }
+            return p;
+          }));
+          setRounds(rounds.filter(r => r.id !== roundId));
+        };
+        const newMatch = () => {
+          setPlayers([{
+            id: 1,
+            name: players[0].name,
+            score: 0
+          }, {
+            id: 2,
+            name: players[1].name,
+            score: 0
+          }]);
+          setRounds([]);
+          setWinner(null);
+          setOverWinner(null);
+          setModal(null);
+        };
+        const resetGame = () => {
+          if (confirm("Reset the current match? Scores and history will be cleared (sets are kept).")) {
+            newMatch();
+          }
+        };
+        const clearSets = () => {
+          if (confirm("Clear the sets counter?")) {
+            setSets({
+              1: 0,
+              2: 0
+            });
+          }
+        };
+        const leaderId = players[0].score === players[1].score ? null : players[0].score > players[1].score ? 1 : 2;
+        return React.createElement("div", {
+          class: "max-w-md mx-auto min-h-screen flex flex-col justify-between p-4 pb-8"
+        }, React.createElement("header", {
+          class: "flex items-center justify-between py-3 border-b border-slate-800"
+        }, React.createElement("div", {
+          class: "flex items-center space-x-2"
+        }, React.createElement("img", {
+          src: "icon-192.png",
+          alt: "",
+          class: "w-9 h-9 rounded-xl shadow-lg shadow-emerald-500/30 float"
+        }), React.createElement("span", {
+          class: "font-black text-lg tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-white to-emerald-300"
+        }, "DOMINO"), React.createElement("span", {
+          class: "text-xs font-semibold uppercase tracking-wider text-slate-400"
+        }, "Points")), React.createElement("div", {
+          class: "flex items-center gap-2"
+        }, !isInstalled && React.createElement("button", {
+          onClick: handleInstallClick,
+          class: "w-8 h-8 flex items-center justify-center bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-full active:scale-95 transition",
+          title: "Install app",
+          "aria-label": "Install app"
+        }, React.createElement("svg", {
+          xmlns: "http://www.w3.org/2000/svg",
+          class: "w-4 h-4",
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "2.5",
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        }, React.createElement("path", {
+          d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+        }), React.createElement("polyline", {
+          points: "7 10 12 15 17 10"
+        }), React.createElement("line", {
+          x1: "12",
+          x2: "12",
+          y1: "15",
+          y2: "3"
+        }))), React.createElement("button", {
+          onClick: () => setModal('settings'),
+          class: "flex items-center gap-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium text-slate-300"
+        }, React.createElement("span", null, "Goal: ", React.createElement("strong", {
+          class: "text-emerald-400 font-bold"
+        }, targetScore)), React.createElement("svg", {
+          xmlns: "http://www.w3.org/2000/svg",
+          class: "w-3.5 h-3.5 text-slate-400",
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "2"
+        }, React.createElement("path", {
+          d: "M12 20h9"
+        }), React.createElement("path", {
+          d: "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"
+        }))))), React.createElement("div", {
+          class: "grid grid-cols-2 gap-3 my-4"
+        }, players.map((player, idx) => {
+          const progress = Math.min(100, Math.round(player.score / targetScore * 100));
+          const isP1 = idx === 0;
+          return React.createElement("div", {
+            key: player.id,
+            onClick: () => {
+              setSelectedPlayerId(player.id);
+              setModal('manual');
+            },
+            class: `glass relative cursor-pointer active:scale-[0.97] rounded-3xl p-4 flex flex-col justify-between transition-all duration-500 ${isP1 ? 'card-p1' : 'card-p2'} ${leaderId === player.id ? isP1 ? 'lead-1' : 'lead-2' : ''}`
+          }, React.createElement("div", {
+            class: "flex items-center justify-between mb-2"
+          }, React.createElement("input", {
+            type: "text",
+            value: player.name,
+            onClick: e => e.stopPropagation(),
+            onChange: e => {
+              const val = e.target.value;
+              setPlayers(players.map(p => p.id === player.id ? {
+                ...p,
+                name: val
+              } : p));
+            },
+            class: "bg-transparent font-bold text-sm tracking-wide focus:outline-none focus:ring-1 focus:ring-slate-400 rounded px-1 -ml-1 text-slate-200 truncate w-24"
+          }), React.createElement("span", {
+            class: `text-[10px] font-bold px-1.5 py-0.5 rounded ${isP1 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400'}`
+          }, leaderId === player.id ? '👑 Lead' : `P${player.id}`)), React.createElement("div", {
+            class: "my-2"
+          }, React.createElement("div", {
+            key: player.score,
+            class: "pop tabular text-6xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-slate-400"
+          }, player.score), React.createElement("div", {
+            class: "text-xs text-slate-500 font-medium mt-0.5"
+          }, targetScore - player.score > 0 ? `${targetScore - player.score} to win` : 'WINNER!')), React.createElement("div", {
+            class: "w-full bg-slate-800/80 h-2.5 rounded-full overflow-hidden mt-2"
+          }, React.createElement("div", {
+            class: `h-full rounded-full transition-all duration-700 ${isP1 ? 'bg-gradient-to-r from-emerald-500 to-teal-300 shadow-[0_0_10px_rgba(16,185,129,.7)]' : 'bg-gradient-to-r from-blue-500 to-sky-300 shadow-[0_0_10px_rgba(59,130,246,.7)]'}`,
+            style: {
+              width: `${progress}%`
+            }
+          })), React.createElement("div", {
+            class: "flex items-center justify-between mt-3 pt-2.5 border-t border-slate-700/50"
+          }, React.createElement("span", {
+            class: "text-[11px] font-bold uppercase tracking-wider text-slate-400"
+          }, "🏆 Sets"), React.createElement("span", {
+            key: sets[player.id] || 0,
+            class: `pop tabular text-xl font-black ${isP1 ? 'text-emerald-400' : 'text-blue-400'}`
+          }, sets[player.id] || 0)));
+        })), React.createElement("div", {
+          class: "flex items-center justify-between mb-3 px-1 text-xs"
+        }, React.createElement("span", {
+          class: "text-slate-500 font-medium"
+        }, "Tap a player card to add points"), React.createElement("button", {
+          onClick: clearSets,
+          class: "font-semibold text-rose-400 hover:text-rose-300 bg-slate-900/70 border border-slate-800 px-3 py-1 rounded-full active:scale-95 transition"
+        }, "Clear sets")), React.createElement("button", {
+          onClick: () => {
+            setSelectedPlayerId(1);
+            setModal('camera');
+          },
+          class: "shine w-full flex items-center justify-center gap-2 mb-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 py-4 px-4 rounded-2xl font-bold text-white shadow-lg shadow-emerald-500/30 transition"
+        }, React.createElement("svg", {
+          xmlns: "http://www.w3.org/2000/svg",
+          class: "w-5 h-5",
+          fill: "none",
+          viewBox: "0 0 24 24",
+          stroke: "currentColor"
+        }, React.createElement("path", {
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          strokeWidth: "2",
+          d: "M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+        }), React.createElement("path", {
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          strokeWidth: "2",
+          d: "M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+        })), React.createElement("span", null, "Scan Dominoes")), React.createElement("div", {
+          class: "flex-1 glass border border-slate-800 rounded-3xl p-3 overflow-hidden flex flex-col mb-4"
+        }, React.createElement("div", {
+          class: "flex justify-between items-center px-1 pb-2 border-b border-slate-800 text-xs font-semibold text-slate-400"
+        }, React.createElement("span", null, "ROUND LOG"), React.createElement("button", {
+          onClick: resetGame,
+          class: "text-rose-400 hover:text-rose-300"
+        }, "Clear Game")), React.createElement("div", {
+          class: "overflow-y-auto flex-1 divide-y divide-slate-800/60 mt-1 max-h-48 pr-1"
+        }, rounds.length === 0 ? React.createElement("div", {
+          class: "text-center py-6 text-slate-600 text-sm"
+        }, "No points recorded yet.", React.createElement("br", null), "Tap a player card or scan domino tiles!") : rounds.map(r => {
+          const p = players.find(player => player.id === r.playerId) || {
+            name: 'Player'
+          };
+          return React.createElement("div", {
+            key: r.id,
+            class: `fade-in flex items-center justify-between py-2 pl-2 text-sm border-l-2 ${r.playerId === 1 ? 'border-emerald-500' : 'border-blue-500'}`
+          }, React.createElement("div", {
+            class: "flex items-center gap-2"
+          }, React.createElement("span", {
+            class: "text-xs text-slate-500"
+          }, r.time), React.createElement("span", {
+            class: `font-semibold ${r.playerId === 1 ? 'text-emerald-400' : 'text-blue-400'}`
+          }, p.name), React.createElement("span", {
+            class: "text-xs bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded"
+          }, r.method === 'camera' ? '📷 scan' : '⌨️ manual')), React.createElement("div", {
+            class: "flex items-center gap-3"
+          }, React.createElement("span", {
+            class: "font-extrabold text-white text-base"
+          }, "+", r.points), React.createElement("button", {
+            onClick: () => undoRound(r.id),
+            title: "Undo score",
+            class: "text-slate-500 hover:text-rose-400 transition"
+          }, React.createElement("svg", {
+            xmlns: "http://www.w3.org/2000/svg",
+            class: "w-4 h-4",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2"
+          }, React.createElement("path", {
+            d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
+          }), React.createElement("path", {
+            d: "M3 3v5h5"
+          })))));
+        }))), React.createElement("div", {
+          class: "glass border border-slate-800/80 rounded-3xl p-3.5 shadow-lg"
+        }, React.createElement("div", {
+          class: "flex items-center justify-center gap-1.5 text-center text-xs font-semibold text-slate-400 mb-2.5"
+        }, React.createElement("span", null, "✨ This app is sponsored by"), React.createElement("span", {
+          class: "text-slate-500"
+        }, "•"), React.createElement("span", {
+          class: "ar-font text-[11px] text-slate-300"
+        }, "هذا التطبيق برعاية")), React.createElement("div", {
+          class: "grid grid-cols-2 gap-2.5"
+        }, React.createElement("a", {
+          href: "https://xferidx.github.io/Dr.ferid.clinic/",
+          target: "_blank",
+          rel: "noopener noreferrer",
+          class: "group flex flex-col items-center justify-center bg-slate-900/90 hover:bg-slate-800/90 border border-teal-500/30 hover:border-teal-400/80 p-2.5 rounded-xl transition duration-200 active:scale-98 text-center shadow-sm"
+        }, React.createElement("div", {
+          class: "flex items-center gap-1.5"
+        }, React.createElement("span", {
+          class: "w-2 h-2 rounded-full bg-teal-400 animate-pulse"
+        }), React.createElement("span", {
+          class: "ar-font font-bold text-xs text-teal-300 group-hover:text-teal-200 truncate"
+        }, "عيادة د.فريد مؤيد")), React.createElement("span", {
+          class: "text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
+        }, "Visit Clinic ↗")), React.createElement("a", {
+          href: "https://xferidx.github.io/Edelwhite/",
+          target: "_blank",
+          rel: "noopener noreferrer",
+          class: "group flex flex-col items-center justify-center bg-slate-900/90 hover:bg-slate-800/90 border border-emerald-500/30 hover:border-emerald-400/80 p-2.5 rounded-xl transition duration-200 active:scale-98 text-center shadow-sm"
+        }, React.createElement("div", {
+          class: "flex items-center gap-1.5"
+        }, React.createElement("span", {
+          class: "w-2 h-2 rounded-full bg-emerald-400 animate-pulse"
+        }), React.createElement("span", {
+          class: "font-extrabold text-xs text-emerald-300 group-hover:text-emerald-200 tracking-wide uppercase"
+        }, "Edelwhite")), React.createElement("span", {
+          class: "text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
+        }, "Visit Website ↗")), React.createElement("a", {
+          href: "https://xferidx.github.io/Iraqestates/",
+          target: "_blank",
+          rel: "noopener noreferrer",
+          class: "group flex flex-col items-center justify-center bg-slate-900/90 hover:bg-slate-800/90 border border-amber-500/30 hover:border-amber-400/80 p-2.5 rounded-xl transition duration-200 active:scale-98 text-center shadow-sm"
+        }, React.createElement("div", {
+          class: "flex items-center gap-1.5"
+        }, React.createElement("span", {
+          class: "w-2 h-2 rounded-full bg-amber-400 animate-pulse"
+        }), React.createElement("span", {
+          class: "ar-font font-bold text-xs text-amber-300 group-hover:text-amber-200 truncate"
+        }, "عقارات العراق")), React.createElement("span", {
+          class: "text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
+        }, "Visit Website ↗")), React.createElement("a", {
+          href: "https://dardoor.net",
+          target: "_blank",
+          rel: "noopener noreferrer",
+          class: "group flex flex-col items-center justify-center bg-slate-900/90 hover:bg-slate-800/90 border border-sky-500/30 hover:border-sky-400/80 p-2.5 rounded-xl transition duration-200 active:scale-98 text-center shadow-sm"
+        }, React.createElement("div", {
+          class: "flex items-center gap-1.5"
+        }, React.createElement("span", {
+          class: "w-2 h-2 rounded-full bg-sky-400 animate-pulse"
+        }), React.createElement("span", {
+          class: "font-black text-xs text-sky-300 group-hover:text-sky-200 tracking-wide"
+        }, "Dardoor.net")), React.createElement("span", {
+          class: "text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
+        }, "Visit Website ↗")))), modal === 'manual' && React.createElement(ManualEntryModal, {
+          players: players,
+          selectedPlayerId: selectedPlayerId,
+          setSelectedPlayerId: setSelectedPlayerId,
+          onClose: () => setModal(null),
+          onSubmit: (playerId, pts) => addPoints(playerId, pts, 'keyboard')
+        }), modal === 'camera' && React.createElement(CameraScannerModal, {
+          players: players,
+          selectedPlayerId: selectedPlayerId,
+          setSelectedPlayerId: setSelectedPlayerId,
+          onClose: () => setModal(null),
+          onSubmit: (playerId, pts) => addPoints(playerId, pts, 'camera')
+        }), modal === 'settings' && React.createElement("div", {
+          class: "fade-in fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        }, React.createElement("div", {
+          class: "bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-5 shadow-2xl"
+        }, React.createElement("h3", {
+          class: "text-lg font-bold text-white mb-1"
+        }, "Edit Winning Points"), React.createElement("p", {
+          class: "text-xs text-slate-400 mb-4"
+        }, "Default is 151. Choose or enter custom points."), React.createElement("div", {
+          class: "grid grid-cols-3 gap-2 mb-4"
+        }, [100, 151, 200].map(val => React.createElement("button", {
+          key: val,
+          onClick: () => setTargetScore(val),
+          class: `py-2 text-sm font-bold rounded-lg border ${targetScore === val ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700'}`
+        }, val, " pts"))), React.createElement("label", {
+          class: "block text-xs font-semibold text-slate-400 mb-1"
+        }, "Target Score:"), React.createElement("input", {
+          type: "number",
+          value: targetScore,
+          onChange: e => setTargetScore(parseInt(e.target.value) || 0),
+          class: "w-full bg-slate-950 border border-slate-700 text-white font-bold text-lg rounded-xl px-4 py-2.5 mb-5 focus:outline-none focus:border-emerald-500"
+        }), React.createElement("button", {
+          onClick: () => setModal(null),
+          class: "w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl transition"
+        }, "Save & Return"))), modal === 'install-help' && React.createElement("div", {
+          class: "fade-in fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4"
+        }, React.createElement("div", {
+          class: "bg-slate-900 border border-slate-700 w-full max-w-sm rounded-3xl p-5 shadow-2xl"
+        }, React.createElement("div", {
+          class: "flex justify-between items-center mb-3"
+        }, React.createElement("h3", {
+          class: "text-base font-bold text-white flex items-center gap-2"
+        }, React.createElement("img", {
+          src: "icon-192.png",
+          alt: "",
+          class: "w-6 h-6 rounded-md"
+        }), React.createElement("span", null, "Add to Home Screen")), React.createElement("button", {
+          onClick: () => setModal(null),
+          class: "text-slate-400 hover:text-white"
+        }, "✕")), React.createElement("div", {
+          class: "space-y-2.5 text-xs text-slate-300"
+        }, isIOS ? React.createElement(React.Fragment, null, React.createElement("div", {
+          class: "flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800"
+        }, React.createElement("span", {
+          class: "w-6 h-6 shrink-0 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold"
+        }, "1"), React.createElement("span", null, "Open this page in ", React.createElement("strong", null, "Safari"), " and tap the ", React.createElement("strong", null, "Share"), " button")), React.createElement("div", {
+          class: "flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800"
+        }, React.createElement("span", {
+          class: "w-6 h-6 shrink-0 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold"
+        }, "2"), React.createElement("span", null, "Choose ", React.createElement("strong", null, "\"Add to Home Screen\""))), React.createElement("div", {
+          class: "flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800"
+        }, React.createElement("span", {
+          class: "w-6 h-6 shrink-0 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold"
+        }, "3"), React.createElement("span", null, "Tap ", React.createElement("strong", null, "Add"), ". Done!"))) : React.createElement(React.Fragment, null, React.createElement("div", {
+          class: "flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800"
+        }, React.createElement("span", {
+          class: "w-6 h-6 shrink-0 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold"
+        }, "1"), React.createElement("span", null, "Tap the browser menu ", React.createElement("strong", null, "⋮"))), React.createElement("div", {
+          class: "flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800"
+        }, React.createElement("span", {
+          class: "w-6 h-6 shrink-0 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold"
+        }, "2"), React.createElement("span", null, "Choose ", React.createElement("strong", null, "\"Install app\""), " or ", React.createElement("strong", null, "\"Add to Home screen\""))))), React.createElement("button", {
+          onClick: () => setModal(null),
+          class: "mt-4 w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl transition"
+        }, "Got It"))), modal === 'winner' && winner && React.createElement("div", {
+          class: "fade-in fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4"
+        }, React.createElement("div", {
+          class: "slide-up bg-gradient-to-b from-slate-900 to-slate-950 border border-emerald-500/50 w-full max-w-sm rounded-3xl p-6 text-center shadow-2xl"
+        }, React.createElement("div", {
+          class: "float w-16 h-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_40px_rgba(16,185,129,.5)] rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl"
+        }, "🏆"), React.createElement("h2", {
+          class: "text-2xl font-black text-white"
+        }, winner.name, " Wins!"), React.createElement("p", {
+          class: "text-slate-400 text-sm mt-1"
+        }, "Reached ", winner.score, " points (Target: ", targetScore, ")"), React.createElement("p", {
+          class: "text-emerald-300 text-sm font-bold mt-3 tabular"
+        }, "Sets: ", players[0].name, " ", sets[1] || 0, " – ", sets[2] || 0, " ", players[1].name), React.createElement("div", {
+          class: "mt-6 flex flex-col gap-2"
+        }, React.createElement("button", {
+          onClick: newMatch,
+          class: "w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition shadow-lg shadow-emerald-950"
+        }, "Play Again"), React.createElement("button", {
+          onClick: () => setModal(null),
+          class: "w-full bg-slate-800 text-slate-300 font-semibold py-2.5 rounded-xl transition"
+        }, "Review Scores")))));
+      }
+      function ManualEntryModal({
+        players,
+        selectedPlayerId,
+        setSelectedPlayerId,
+        onClose,
+        onSubmit
+      }) {
+        const [inputPoints, setInputPoints] = useState('');
+        const handleQuickAdd = num => {
+          const current = parseInt(inputPoints || '0', 10);
+          setInputPoints((current + num).toString());
+        };
+        const handleKeypad = digit => {
+          if (inputPoints.length >= 4) return;
+          setInputPoints(prev => prev === '0' ? digit : prev + digit);
+        };
+        const handleBackspace = () => {
+          setInputPoints(prev => prev.slice(0, -1));
+        };
+        const submit = () => {
+          const pts = parseInt(inputPoints, 10);
+          if (pts > 0) {
+            onSubmit(selectedPlayerId, pts);
+          }
+        };
+        return React.createElement("div", {
+          class: "fade-in fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex flex-col justify-end p-3 max-w-md mx-auto"
+        }, React.createElement("div", {
+          class: "slide-up bg-slate-900 border border-slate-700 rounded-3xl p-4 shadow-2xl flex flex-col"
+        }, React.createElement("div", {
+          class: "flex justify-between items-center mb-3"
+        }, React.createElement("span", {
+          class: "text-xs font-bold uppercase tracking-wider text-slate-400"
+        }, "Score Round"), React.createElement("button", {
+          onClick: onClose,
+          class: "text-slate-400 hover:text-white p-1"
+        }, "✕")), React.createElement("div", {
+          class: "grid grid-cols-2 gap-2 mb-3"
+        }, players.map(p => React.createElement("button", {
+          key: p.id,
+          onClick: () => setSelectedPlayerId(p.id),
+          class: `py-2 px-3 rounded-xl font-bold text-sm flex items-center justify-between border transition ${selectedPlayerId === p.id ? p.id === 1 ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-blue-500 text-white border-blue-400' : 'bg-slate-800 text-slate-300 border-slate-700'}`
+        }, React.createElement("span", {
+          class: "truncate"
+        }, p.name), React.createElement("span", {
+          class: "text-xs opacity-75"
+        }, "(", p.score, ")")))), React.createElement("div", {
+          class: "bg-slate-950 border border-slate-800 rounded-2xl py-3 px-4 text-center mb-3"
+        }, React.createElement("span", {
+          class: "tabular text-4xl font-black text-emerald-400 drop-shadow-[0_0_12px_rgba(16,185,129,.5)]"
+        }, inputPoints || '0'), React.createElement("span", {
+          class: "text-slate-500 text-xs font-semibold ml-1"
+        }, "pts")), React.createElement("div", {
+          class: "grid grid-cols-4 gap-2 mb-3"
+        }, [5, 10, 15, 20].map(val => React.createElement("button", {
+          key: val,
+          onClick: () => handleQuickAdd(val),
+          class: "bg-slate-800 hover:bg-slate-700 active:scale-95 text-xs font-bold py-2 rounded-lg text-slate-200 border border-slate-700"
+        }, "+", val))), React.createElement("div", {
+          class: "grid grid-cols-3 gap-2 mb-3"
+        }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(btn => {
+          if (btn === 'C') {
+            return React.createElement("button", {
+              key: btn,
+              onClick: () => setInputPoints(''),
+              class: "bg-slate-800 text-rose-400 font-bold text-lg py-3 rounded-xl active:bg-slate-700"
+            }, "C");
+          }
+          if (btn === '⌫') {
+            return React.createElement("button", {
+              key: btn,
+              onClick: handleBackspace,
+              class: "bg-slate-800 text-slate-300 font-bold text-lg py-3 rounded-xl active:bg-slate-700"
+            }, "⌫");
+          }
+          return React.createElement("button", {
+            key: btn,
+            onClick: () => handleKeypad(btn),
+            class: "bg-slate-800 text-white font-bold text-xl py-3 rounded-xl border border-slate-700/60 active:scale-95 active:bg-slate-700 transition"
+          }, btn);
+        })), React.createElement("button", {
+          onClick: submit,
+          disabled: !inputPoints || parseInt(inputPoints) <= 0,
+          class: "w-full bg-emerald-500 disabled:opacity-40 text-slate-950 font-black py-3.5 rounded-xl text-base shadow-lg transition"
+        }, "Add Points")));
+      }
+      const LENS_KEY = 'domino_lens';
+      function readSavedLens() {
+        try {
+          return JSON.parse(localStorage.getItem(LENS_KEY) || 'null');
+        } catch (e) {
+          return null;
         }
-      };
-
-      // Save to localStorage
-      useEffect(() => {
-        localStorage.setItem('domino_target', targetScore);
-        localStorage.setItem('domino_players', JSON.stringify(players));
-        localStorage.setItem('domino_rounds', JSON.stringify(rounds));
-      }, [players, targetScore, rounds]);
-
-      useEffect(() => {
-        localStorage.setItem('domino_sets', JSON.stringify(sets));
-        localStorage.setItem('domino_over', overWinner === null ? '' : String(overWinner));
-      }, [sets, overWinner]);
-
-      // Check victory (a set is counted once per win)
-      useEffect(() => {
-        const someoneWon = targetScore > 0 && (players[0].score >= targetScore || players[1].score >= targetScore);
-        if (someoneWon) {
-          if (overWinner === null) {
-            const champ = players[0].score > players[1].score ? players[0] : players[1];
-            setOverWinner(champ.id);
-            setSets(prev => ({ ...prev, [champ.id]: (prev[champ.id] || 0) + 1 }));
-            setWinner(champ);
-            setModal('winner');
+      }
+      function saveLens(d) {
+        try {
+          localStorage.setItem(LENS_KEY, JSON.stringify({
+            id: d.deviceId,
+            label: d.label
+          }));
+        } catch (e) {}
+      }
+      function detectPips(data, w, h, inverted) {
+        const n = w * h;
+        const V = new Uint8Array(n),
+          S = new Uint8Array(n);
+        for (let i = 0, p = 0; i < n; i++, p += 4) {
+          const r = data[p],
+            g = data[p + 1],
+            b = data[p + 2];
+          const mx = r > g ? r > b ? r : b : g > b ? g : b;
+          const mn = r < g ? r < b ? r : b : g < b ? g : b;
+          V[i] = mx;
+          S[i] = mx ? (mx - mn) * 255 / mx | 0 : 0;
+        }
+        let mask = new Uint8Array(n);
+        if (!inverted) {
+          const hist = new Uint32Array(256);
+          for (let i = 0; i < n; i++) if (S[i] < 120) hist[V[i]]++;
+          let total = 0;
+          for (let v = 0; v < 256; v++) total += hist[v];
+          if (total < n * 0.05) return {
+            count: 0,
+            points: []
+          };
+          let acc = 0,
+            ref = 255;
+          for (let v = 255; v >= 0; v--) {
+            acc += hist[v];
+            if (acc >= total * 0.06) {
+              ref = v;
+              break;
+            }
+          }
+          const vT = Math.max(60, ref * 0.82);
+          for (let i = 0; i < n; i++) mask[i] = S[i] < 120 && V[i] > vT ? 1 : 0;
+        } else {
+          for (let i = 0; i < n; i++) mask[i] = V[i] < 85 && S[i] < 110 ? 1 : 0;
+        }
+        const tmp = new Uint8Array(n);
+        for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+          tmp[i] = mask[i] && mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w] ? 1 : 0;
+        }
+        mask = new Uint8Array(n);
+        for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+          mask[i] = tmp[i] || tmp[i - 1] || tmp[i + 1] || tmp[i - w] || tmp[i + w] ? 1 : 0;
+        }
+        const label = new Int32Array(n);
+        const stack = new Int32Array(n);
+        const areas = [0];
+        let nl = 0;
+        for (let s0 = 0; s0 < n; s0++) {
+          if (!mask[s0] || label[s0]) continue;
+          nl++;
+          let sp = 0,
+            area = 0;
+          stack[sp++] = s0;
+          label[s0] = nl;
+          while (sp) {
+            const i = stack[--sp];
+            area++;
+            const x = i % w;
+            if (x > 0 && mask[i - 1] && !label[i - 1]) {
+              label[i - 1] = nl;
+              stack[sp++] = i - 1;
+            }
+            if (x < w - 1 && mask[i + 1] && !label[i + 1]) {
+              label[i + 1] = nl;
+              stack[sp++] = i + 1;
+            }
+            if (i >= w && mask[i - w] && !label[i - w]) {
+              label[i - w] = nl;
+              stack[sp++] = i - w;
+            }
+            if (i < n - w && mask[i + w] && !label[i + w]) {
+              label[i + w] = nl;
+              stack[sp++] = i + w;
+            }
+          }
+          areas.push(area);
+        }
+        const minTile = Math.max(300, n * 0.004);
+        const tile = new Uint8Array(n);
+        let tileCount = 0;
+        for (let i = 0; i < n; i++) if (label[i] && areas[label[i]] >= minTile) {
+          tile[i] = 1;
+        }
+        for (let l = 1; l <= nl; l++) if (areas[l] >= minTile) tileCount++;
+        if (!tileCount) return {
+          count: 0,
+          points: []
+        };
+        const bg = new Uint8Array(n);
+        let sp = 0;
+        const push = i => {
+          if (!tile[i] && !bg[i]) {
+            bg[i] = 1;
+            stack[sp++] = i;
+          }
+        };
+        for (let x = 0; x < w; x++) {
+          push(x);
+          push((h - 1) * w + x);
+        }
+        for (let y = 0; y < h; y++) {
+          push(y * w);
+          push(y * w + w - 1);
+        }
+        while (sp) {
+          const i = stack[--sp];
+          const x = i % w;
+          if (x > 0) push(i - 1);
+          if (x < w - 1) push(i + 1);
+          if (i >= w) push(i - w);
+          if (i < n - w) push(i + w);
+        }
+        const seen = new Uint8Array(n);
+        const cand = [];
+        for (let s0 = 0; s0 < n; s0++) {
+          if (tile[s0] || bg[s0] || seen[s0]) continue;
+          let area = 0,
+            sx = 0,
+            sy = 0,
+            x0 = w,
+            x1 = 0,
+            y0 = h,
+            y1 = 0;
+          sp = 0;
+          stack[sp++] = s0;
+          seen[s0] = 1;
+          while (sp) {
+            const i = stack[--sp];
+            const x = i % w,
+              y = (i - x) / w;
+            area++;
+            sx += x;
+            sy += y;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+            if (x > 0 && !tile[i - 1] && !bg[i - 1] && !seen[i - 1]) {
+              seen[i - 1] = 1;
+              stack[sp++] = i - 1;
+            }
+            if (x < w - 1 && !tile[i + 1] && !bg[i + 1] && !seen[i + 1]) {
+              seen[i + 1] = 1;
+              stack[sp++] = i + 1;
+            }
+            if (i >= w && !tile[i - w] && !bg[i - w] && !seen[i - w]) {
+              seen[i - w] = 1;
+              stack[sp++] = i - w;
+            }
+            if (i < n - w && !tile[i + w] && !bg[i + w] && !seen[i + w]) {
+              seen[i + w] = 1;
+              stack[sp++] = i + w;
+            }
+          }
+          const bw = x1 - x0 + 1,
+            bh = y1 - y0 + 1;
+          const aspect = bw / bh,
+            fill = area / (bw * bh);
+          if (area >= 12 && aspect > 0.65 && aspect < 1.55 && fill > 0.6 && fill < 0.95) {
+            cand.push({
+              area,
+              x: sx / area / w,
+              y: sy / area / h
+            });
+          }
+        }
+        if (!cand.length) return {
+          count: 0,
+          points: []
+        };
+        const sorted = cand.map(c => c.area).sort((a, b) => a - b);
+        const med = sorted[sorted.length >> 1];
+        const pips = cand.filter(c => c.area > med * 0.45 && c.area < med * 2.2);
+        return {
+          count: pips.length,
+          points: pips.map(p => ({
+            x: p.x,
+            y: p.y
+          }))
+        };
+      }
+      function CameraScannerModal({
+        players,
+        selectedPlayerId,
+        setSelectedPlayerId,
+        onClose,
+        onSubmit
+      }) {
+        const videoRef = useRef(null);
+        const canvasRef = useRef(null);
+        const frameRef = useRef(null);
+        const streamRef = useRef(null);
+        const historyRef = useRef([]);
+        const switchingRef = useRef(false);
+        const [cameraActive, setCameraActive] = useState(false);
+        const [lenses, setLenses] = useState([]);
+        const [lensIdx, setLensIdx] = useState(0);
+        const [hasSavedLens, setHasSavedLens] = useState(() => !!readSavedLens());
+        const [detectedPips, setDetectedPips] = useState(0);
+        const [detectedCoords, setDetectedCoords] = useState([]);
+        const [tileInverted, setTileInverted] = useState(false);
+        const [manualAdjustment, setManualAdjustment] = useState(0);
+        const stopStream = () => {
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(t => t.stop());
+            streamRef.current = null;
+          }
+        };
+        const lensLooksBlack = async () => {
+          const v = videoRef.current;
+          if (!v) return false;
+          const c = document.createElement('canvas');
+          c.width = 16;
+          c.height = 12;
+          const cx = c.getContext('2d', {
+            willReadFrequently: true
+          });
+          if (!cx) return false;
+          let brightest = 0;
+          for (let k = 0; k < 4; k++) {
+            await new Promise(r => setTimeout(r, 250));
             try {
-              confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
+              cx.drawImage(v, 0, 0, 16, 12);
+              const d = cx.getImageData(0, 0, 16, 12).data;
+              let sum = 0;
+              for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+              brightest = Math.max(brightest, sum / (d.length / 4) / 3);
+            } catch (e) {
+              return false;
+            }
+          }
+          return brightest < 12;
+        };
+        const openCamera = async deviceId => {
+          stopStream();
+          const base = deviceId ? {
+            deviceId: {
+              exact: deviceId
+            }
+          } : {
+            facingMode: {
+              ideal: 'environment'
+            }
+          };
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              ...base,
+              width: {
+                ideal: 1920
+              },
+              height: {
+                ideal: 1080
+              }
+            }
+          });
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            try {
+              await videoRef.current.play();
             } catch (e) {}
           }
-        } else if (overWinner !== null) {
-          // Win was undone (undo or higher goal): take the set back
-          setSets(prev => ({ ...prev, [overWinner]: Math.max(0, (prev[overWinner] || 0) - 1) }));
-          setOverWinner(null);
-        }
-      }, [players, targetScore, overWinner]);
-
-      // Add points
-      const addPoints = (playerId, points, method = 'keyboard') => {
-        if (!points || isNaN(points) || points <= 0) return;
-
-        const newPlayers = players.map(p => {
-          if (p.id === playerId) {
-            return { ...p, score: p.score + points };
-          }
-          return p;
-        });
-
-        const newRound = {
-          id: Date.now(),
-          playerId,
-          points,
-          method,
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          try {
+            const track = stream.getVideoTracks()[0];
+            const caps = track.getCapabilities ? track.getCapabilities() : {};
+            if (caps.zoom && caps.zoom.min < 1) {
+              await track.applyConstraints({
+                advanced: [{
+                  zoom: caps.zoom.min
+                }]
+              });
+            }
+          } catch (e) {}
+          return stream;
         };
-
-        setPlayers(newPlayers);
-        setRounds([newRound, ...rounds]);
-        setModal(null);
-      };
-
-      // Undo round
-      const undoRound = (roundId) => {
-        const roundToUndo = rounds.find(r => r.id === roundId);
-        if (!roundToUndo) return;
-
-        setPlayers(players.map(p => {
-          if (p.id === roundToUndo.playerId) {
-            return { ...p, score: Math.max(0, p.score - roundToUndo.points) };
+        useEffect(() => {
+          let cancelled = false;
+          (async () => {
+            try {
+              await openCamera();
+              if (cancelled) return;
+              const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+              const back = devs.filter(d => !/front|user|selfie|facetime/i.test(d.label));
+              const rank = d => /ultra|0\.5/i.test(d.label) ? 0 : 1;
+              const sorted = [...back].sort((x, y) => rank(x) - rank(y));
+              setLenses(sorted);
+              const current = streamRef.current.getVideoTracks()[0].getSettings().deviceId;
+              const saved = readSavedLens();
+              let target = null;
+              if (saved) {
+                target = sorted.find(d => d.deviceId === saved.id) || (saved.label ? sorted.find(d => d.label === saved.label) : null) || null;
+              }
+              if (!target && sorted.length && rank(sorted[0]) === 0) target = sorted[0];
+              if (target && target.deviceId !== current) {
+                let ok = false;
+                try {
+                  await openCamera(target.deviceId);
+                  setLensIdx(sorted.indexOf(target));
+                  ok = !(await lensLooksBlack());
+                } catch (e) {}
+                if (!ok) {
+                  try {
+                    localStorage.removeItem(LENS_KEY);
+                  } catch (e) {}
+                  setHasSavedLens(false);
+                  await openCamera();
+                  const i = sorted.findIndex(d => d.deviceId === current);
+                  setLensIdx(i >= 0 ? i : 0);
+                }
+              } else {
+                const i = sorted.findIndex(d => d.deviceId === current);
+                setLensIdx(i >= 0 ? i : 0);
+              }
+              if (!cancelled) setCameraActive(true);
+            } catch (err) {
+              console.error('Camera error:', err);
+              alert('Unable to access camera. Please allow camera permissions or enter points with the keyboard.');
+              onClose();
+            }
+          })();
+          return () => {
+            cancelled = true;
+            stopStream();
+          };
+        }, []);
+        const nextLens = async () => {
+          if (lenses.length < 2 || switchingRef.current) return;
+          switchingRef.current = true;
+          try {
+            let i = lensIdx;
+            for (let tries = 0; tries < lenses.length; tries++) {
+              i = (i + 1) % lenses.length;
+              setLensIdx(i);
+              try {
+                await openCamera(lenses[i].deviceId);
+              } catch (e) {
+                continue;
+              }
+              if (await lensLooksBlack()) continue;
+              saveLens(lenses[i]);
+              setHasSavedLens(true);
+              break;
+            }
+          } finally {
+            switchingRef.current = false;
           }
-          return p;
-        }));
+        };
+        const lensName = () => {
+          const l = lenses[lensIdx];
+          if (!l) return 'Back camera';
+          if (/ultra|0\.5/i.test(l.label)) return 'Ultra wide';
+          if (/tele/i.test(l.label)) return 'Telephoto';
+          return lenses.length > 1 ? `Lens ${lensIdx + 1}/${lenses.length}` : 'Back camera';
+        };
+        useEffect(() => {
+          if (!cameraActive) return;
+          const interval = setInterval(() => {
+            scanFrame();
+          }, 500);
+          return () => clearInterval(interval);
+        }, [cameraActive, tileInverted]);
+        const scanFrame = () => {
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          const frame = frameRef.current;
+          if (!video || !canvas || !frame || video.readyState < 2 || !video.videoWidth) return;
+          const vr = video.getBoundingClientRect();
+          const fr = frame.getBoundingClientRect();
+          const vW = video.videoWidth,
+            vH = video.videoHeight;
+          const scale = Math.max(vr.width / vW, vr.height / vH);
+          const offX = (vr.width - vW * scale) / 2;
+          const offY = (vr.height - vH * scale) / 2;
+          const sx = (fr.left - vr.left - offX) / scale;
+          const sy = (fr.top - vr.top - offY) / scale;
+          const sw = fr.width / scale;
+          const sh = fr.height / scale;
+          const width = 640;
+          const height = Math.max(120, Math.round(width * fr.height / fr.width));
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d', {
+            willReadFrequently: true
+          });
+          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+          const img = ctx.getImageData(0, 0, width, height);
+          const result = detectPips(img.data, width, height, tileInverted);
+          const hist = historyRef.current;
+          hist.push(result.count);
+          if (hist.length > 5) hist.shift();
+          const sortedHist = [...hist].sort((x, y) => x - y);
+          setDetectedPips(sortedHist[sortedHist.length >> 1]);
+          setDetectedCoords(result.points);
+        };
+        const finalCount = Math.max(0, detectedPips + manualAdjustment);
+        return React.createElement("div", {
+          class: "fade-in fixed inset-0 z-50 bg-black text-white overflow-hidden"
+        }, React.createElement("video", {
+          ref: videoRef,
+          playsInline: true,
+          muted: true,
+          class: "absolute inset-0 w-full h-full object-cover"
+        }), React.createElement("canvas", {
+          ref: canvasRef,
+          class: "hidden"
+        }), React.createElement("div", {
+          class: "absolute top-0 inset-x-0 z-10 flex items-center justify-between gap-2 px-4 pb-6 bg-gradient-to-b from-black/80 to-transparent",
+          style: {
+            paddingTop: 'calc(env(safe-area-inset-top, 0px) + 12px)'
+          }
+        }, React.createElement("div", {
+          class: "min-w-0"
+        }, React.createElement("h4", {
+          class: "font-bold text-sm"
+        }, "Domino Scanner"), React.createElement("p", {
+          class: "text-[11px] text-emerald-300 font-semibold truncate"
+        }, lensName()), lenses.length > 1 && !hasSavedLens && React.createElement("p", {
+          class: "text-[10px] text-slate-300"
+        }, "Tap 🔄 Lens until the view is widest. It will be remembered.")), React.createElement("div", {
+          class: "flex items-center gap-2"
+        }, lenses.length > 1 && React.createElement("button", {
+          onClick: nextLens,
+          class: "bg-black/60 backdrop-blur border border-slate-600 text-xs font-bold px-3 py-2 rounded-full active:scale-95"
+        }, "🔄 Lens"), React.createElement("button", {
+          onClick: onClose,
+          class: "bg-black/60 backdrop-blur border border-slate-600 w-9 h-9 rounded-full flex items-center justify-center active:scale-95"
+        }, "✕"))), React.createElement("div", {
+          ref: frameRef,
+          class: "absolute left-3 right-3 border-2 border-emerald-400/90 rounded-3xl pointer-events-none scanner-viewfinder",
+          style: {
+            top: 'calc(env(safe-area-inset-top, 0px) + 72px)',
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 236px)'
+          }
+        }, detectedCoords.map((pt, i) => React.createElement("div", {
+          key: i,
+          class: "absolute w-3.5 h-3.5 -ml-1.5 -mt-1.5 rounded-full border-2 border-emerald-400 bg-emerald-500/40",
+          style: {
+            left: `${pt.x * 100}%`,
+            top: `${pt.y * 100}%`
+          }
+        }))), React.createElement("button", {
+          onClick: () => {
+            historyRef.current = [];
+            setTileInverted(!tileInverted);
+          },
+          class: "absolute right-5 z-10 bg-black/70 backdrop-blur text-xs px-3 py-1.5 rounded-xl border border-slate-600 text-slate-200 font-semibold active:scale-95",
+          style: {
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 248px)'
+          }
+        }, tileInverted ? '⚫ Black tile' : '⚪ White tile'), React.createElement("div", {
+          class: "absolute bottom-0 inset-x-0 z-10 glass border-t border-slate-700 rounded-t-3xl p-4 flex flex-col gap-3",
+          style: {
+            paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)'
+          }
+        }, React.createElement("div", {
+          class: "flex gap-2"
+        }, players.map(p => React.createElement("button", {
+          key: p.id,
+          onClick: () => setSelectedPlayerId(p.id),
+          class: `flex-1 py-2 px-3 rounded-xl font-bold text-xs border truncate ${selectedPlayerId === p.id ? p.id === 1 ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-blue-500 text-white border-blue-400' : 'bg-slate-800 text-slate-400 border-slate-700'}`
+        }, "Give to: ", p.name))), React.createElement("div", {
+          class: "flex items-center justify-between bg-slate-950/80 px-4 py-2 rounded-xl border border-slate-800"
+        }, React.createElement("span", {
+          class: "text-xs font-semibold text-slate-400"
+        }, "Pips counted"), React.createElement("div", {
+          class: "flex items-center gap-3"
+        }, React.createElement("button", {
+          onClick: () => setManualAdjustment(m => m - 1),
+          class: "w-9 h-9 bg-slate-800 rounded-lg font-bold text-lg text-slate-200 active:scale-95"
+        }, "−"), React.createElement("span", {
+          class: "tabular text-3xl font-black text-emerald-400 min-w-10 text-center"
+        }, finalCount), React.createElement("button", {
+          onClick: () => setManualAdjustment(m => m + 1),
+          class: "w-9 h-9 bg-slate-800 rounded-lg font-bold text-lg text-slate-200 active:scale-95"
+        }, "+"))), React.createElement("button", {
+          onClick: () => onSubmit(selectedPlayerId, finalCount),
+          disabled: finalCount <= 0,
+          class: "w-full bg-emerald-500 disabled:opacity-40 hover:bg-emerald-400 text-slate-950 font-black py-3 rounded-xl transition shadow-lg shadow-emerald-950"
+        }, "Confirm +", finalCount, " Points")));
+      }
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(React.createElement(DominoApp, null));
+    };
+  </script>
+</body>
+</html>
 
-        setRounds(rounds.filter(r => r.id !== roundId));
-      };
-
-      // Start a new match (sets are kept)
-      const newMatch = () => {
-        setPlayers([
-          { id: 1, name: players[0].name, score: 0 },
-          { id: 2, name: players[1].name, score: 0 }
-        ]);
-        setRounds([]);
-        setWinner(null);
-        setOverWinner(null);
-        setModal(null);
-      };
-
-      const resetGame = () => {
-        if (confirm("Reset the current match? Scores and history will be cleared (sets are kept).")) {
-          newMatch();
-        }
-      };
-
-      const clearSets = () => {
-        if (confirm("Clear the sets counter?")) {
-          setSets({ 1: 0, 2: 0 });
-        }
-      };
-
-      const leaderId = players[0].score === players[1].score ? null : (players[0].score > players[1].score ? 1 : 2);
-
-      return (
-        <div class="max-w-md mx-auto min-h-screen flex flex-col justify-between p-4 pb-8">
-          {/* Header */}
-          <header class="flex items-center justify-between py-3 border-b border-slate-800">
-            <div class="flex items-center space-x-2">
-              <img src="icon-192.png" alt="" class="w-9 h-9 rounded-xl shadow-lg shadow-emerald-500/30 float" />
-              <span class="font-black text-lg tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-white to-emerald-300">DOMINO</span>
-              <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Points</span>
-            </div>
-
-            <div class="flex items-center gap-2">
-              {/* Small install button */}
-              {!isInstalled && (
-                <button
-                  onClick={handleInstallClick}
-                  class="w-8 h-8 flex items-center justify-center bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-full active:scale-95 transition"
-                  title="Install app"
-                  aria-label="Install app"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                </button>
-              )}
-
-              {/* Target Score Edit Button */}
-              <button
-                onClick={() => setModal('settings')}
-                class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium text-slate-300"
-              >
-                <span>Goal: <strong class="text-emerald-400 font-bold">{targetScore}</strong></span>
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              </button>
-            </div>
-          </header>
-
-          {/* Players Score Cards */}
-          <div class="grid grid-cols-2 gap-3 my-4">
-            {players.map((player, idx) => {
-              const progress = Math.min(100, Math.round((player.score / targetScore) * 100));
-              const isP1 = idx === 0;
-              return (
-                <div
-                  key={player.id}
-                  onClick={() => { setSelectedPlayerId(player.id); setModal('manual'); }}
-                  class={`glass relative cursor-pointer active:scale-[0.97] rounded-3xl p-4 flex flex-col justify-between transition-all duration-500 ${isP1 ? 'card-p1' : 'card-p2'} ${leaderId === player.id ? (isP1 ? 'lead-1' : 'lead-2') : ''}`}
-                >
-                  <div class="flex items-center justify-between mb-2">
-                    <input
-                      type="text"
-                      value={player.name}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setPlayers(players.map(p => p.id === player.id ? { ...p, name: val } : p));
-                      }}
-                      class="bg-transparent font-bold text-sm tracking-wide focus:outline-none focus:ring-1 focus:ring-slate-400 rounded px-1 -ml-1 text-slate-200 truncate w-24"
-                    />
-                    <span class={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isP1 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                      {leaderId === player.id ? '👑 Lead' : `P${player.id}`}
-                    </span>
-                  </div>
-
-                  <div class="my-2">
-                    <div key={player.score} class="pop tabular text-6xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-slate-400">{player.score}</div>
-                    <div class="text-xs text-slate-500 font-medium mt-0.5">
-                      {targetScore - player.score > 0 ? `${targetScore - player.score} to win` : 'WINNER!'}
-                    </div>
-                  </div>
-
-                  <div class="w-full bg-slate-800/80 h-2.5 rounded-full overflow-hidden mt-2">
-                    <div
-                      class={`h-full rounded-full transition-all duration-700 ${isP1 ? 'bg-gradient-to-r from-emerald-500 to-teal-300 shadow-[0_0_10px_rgba(16,185,129,.7)]' : 'bg-gradient-to-r from-blue-500 to-sky-300 shadow-[0_0_10px_rgba(59,130,246,.7)]'}`}
-                      style={{ width: `${progress}%` }}
-                    />
-                  </div>
-
-                  {/* Sets won */}
-                  <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-700/50">
-                    <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">🏆 Sets</span>
-                    <span key={sets[player.id] || 0} class={`pop tabular text-xl font-black ${isP1 ? 'text-emerald-400' : 'text-blue-400'}`}>{sets[player.id] || 0}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Hint + clear sets */}
-          <div class="flex items-center justify-between mb-3 px-1 text-xs">
-            <span class="text-slate-500 font-medium">Tap a player card to add points</span>
-            <button
-              onClick={clearSets}
-              class="font-semibold text-rose-400 hover:text-rose-300 bg-slate-900/70 border border-slate-800 px-3 py-1 rounded-full active:scale-95 transition"
-            >
-              Clear sets
-            </button>
-          </div>
-
-          {/* Camera scanner */}
-          <button
-            onClick={() => { setSelectedPlayerId(1); setModal('camera'); }}
-            class="shine w-full flex items-center justify-center gap-2 mb-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 py-4 px-4 rounded-2xl font-bold text-white shadow-lg shadow-emerald-500/30 transition"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            <span>Scan Dominoes</span>
-          </button>
-
-          {/* History Feed */}
-          <div class="flex-1 glass border border-slate-800 rounded-3xl p-3 overflow-hidden flex flex-col mb-4">
-            <div class="flex justify-between items-center px-1 pb-2 border-b border-slate-800 text-xs font-semibold text-slate-400">
-              <span>ROUND LOG</span>
-              <button onClick={resetGame} class="text-rose-400 hover:text-rose-300">Clear Game</button>
-            </div>
-            <div class="overflow-y-auto flex-1 divide-y divide-slate-800/60 mt-1 max-h-48 pr-1">
-              {rounds.length === 0 ? (
-                <div class="text-center py-6 text-slate-600 text-sm">No points recorded yet.<br/>Tap a player card or scan domino tiles!</div>
-              ) : (
-                rounds.map(r => {
-                  const p = players.find(player => player.id === r.playerId) || { name: 'Player' };
-                  return (
-                    <div key={r.id} class={`fade-in flex items-center justify-between py-2 pl-2 text-sm border-l-2 ${r.playerId === 1 ? 'border-emerald-500' : 'border-blue-500'}`}>
-                      <div class="flex items-center gap-2">
-                        <span class="text-xs text-slate-500">{r.time}</span>
-                        <span class={`font-semibold ${r.playerId === 1 ? 'text-emerald-400' : 'text-blue-400'}`}>
-                          {p.name}
-                        </span>
-                        <span class="text-xs bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">
-                          {r.method === 'camera' ? '📷 scan' : '⌨️ manual'}
-                        </span>
-                      </div>
-                      <div class="flex items-center gap-3">
-                        <span class="font-extrabold text-white text-base">+{r.points}</span>
-                        <button
-                          onClick={() => undoRound(r.id)}
-                          title="Undo score"
-                          class="text-slate-500 hover:text-rose-400 transition"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* SPONSOR SECTION */}
-          <div class="glass border border-slate-800/80 rounded-3xl p-3.5 shadow-lg">
-            <div clas
